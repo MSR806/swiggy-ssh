@@ -18,15 +18,19 @@
 
 ## Architecture
 
-Ports & Adapters (Clean Architecture). Three layers:
+Ports & Adapters (Clean Architecture). Five layer groups:
 
-- **Delivery adapters**: `internal/sshserver`, `internal/httpserver`, `internal/tui`
-- **Domain / application**: `internal/auth`, `internal/identity`, `internal/instamart`
-- **Infrastructure**: `internal/store`, `internal/cache`, `internal/crypto`, `internal/provider/`
+- **Domain**: `internal/domain/*` entities, domain errors, and ports
+- **Application**: `internal/application/*` use cases and orchestration
+- **Presentation**: `internal/presentation/ssh`, `internal/presentation/http`, `internal/presentation/tui`
+- **Infrastructure**: `internal/infrastructure/*` Postgres, Redis, crypto, and provider adapters
+- **Platform**: `internal/platform/*` config and logging
 
-**Hard rule**: delivery adapters must never import infrastructure packages. `cmd/swiggy-ssh/main.go` is the only wiring point.
+**Hard rule**: presentation adapters must never import infrastructure packages. `cmd/swiggy-ssh/main.go` is the only wiring point.
 
 **Client-agnostic backend**: domain services have no SSH/HTTP/TUI imports. SSH is the first client; future clients (web, WhatsApp, agentic) reuse the same services.
+
+**Skill to load**: use `.agents/skills/swiggy-ssh-clean-architecture/SKILL.md` when doing architecture, package-boundary, refactor, new feature placement, ports/repository/use-case naming, adapter naming, or architecture review work.
 
 ---
 
@@ -34,18 +38,19 @@ Ports & Adapters (Clean Architecture). Three layers:
 
 | What you need | Where to look |
 |---|---|
-| Domain types, ports, error sentinels | `internal/auth/auth.go`, `internal/identity/identity.go` |
-| Auth orchestration (first-auth, reauth, revoked) | `internal/auth/service.go` |
-| SSH connection + session routing | `internal/sshserver/server.go` |
-| Browser login page handlers | `internal/httpserver/` |
-| TUI screens (Bubbletea v1 + Lipgloss) | `internal/tui/tui.go` |
-| Postgres repositories | `internal/store/postgres.go` |
-| DB schema + migrations | `internal/store/migrations/` |
-| Redis login-code service | `internal/cache/redis_logincode.go` |
-| Token encryption (AES-256-GCM) | `internal/crypto/aes.go` |
-| Config + env vars | `internal/config/config.go` |
+| Domain types, ports, error sentinels | `internal/domain/auth/auth.go`, `internal/domain/identity/identity.go` |
+| Auth orchestration (`EnsureValidAccountUseCase.Execute`) | `internal/application/auth/ensure_valid_account.go` |
+| Identity/session use cases (`ResolveSSHIdentityUseCase`, `StartTerminalSessionUseCase`, `EndTerminalSessionUseCase`) | `internal/application/identity/` |
+| SSH connection + session routing | `internal/presentation/ssh/server.go` |
+| Browser login page handlers | `internal/presentation/http/` |
+| TUI screens (Bubbletea v1 + Lipgloss) | `internal/presentation/tui/tui.go` |
+| Postgres repositories | `internal/infrastructure/persistence/postgres/postgres.go` |
+| DB schema + migrations | `internal/infrastructure/persistence/postgres/migrations/` |
+| Redis login-code service | `internal/infrastructure/cache/redis/redis_logincode.go` |
+| Token encryption (AES-256-GCM) | `internal/infrastructure/crypto/aes.go` |
+| Config + env vars | `internal/platform/config/config.go` |
 | Wiring entrypoint | `cmd/swiggy-ssh/main.go` |
-| In-memory mocks for tests | `internal/provider/mock/` |
+| In-memory mocks for tests | `internal/infrastructure/provider/mock/` |
 | Docker / Compose setup | `Dockerfile`, `compose.yaml` |
 
 ---
@@ -65,21 +70,18 @@ Ports & Adapters (Clean Architecture). Three layers:
 
 | Package | Must NOT import |
 |---|---|
-| `internal/auth` | anything from this repo |
-| `internal/identity` | `store`, `cache`, `auth`, delivery adapters |
-| `internal/tui` | `store`, `cache`, `crypto`, `sshserver`, `httpserver`, `identity` |
-| `internal/httpserver` | `store`, `cache`, `crypto`, `sshserver`, `tui`, `identity` |
-| `internal/sshserver` | `store`, `cache`, `crypto` |
-| `internal/store` | `sshserver`, `httpserver`, `tui`, `cache` |
-| `internal/cache` | `store`, `sshserver`, `httpserver`, `tui`, `identity` |
-| `internal/crypto` | anything from this repo |
+| `internal/domain/*` | anything from this repo |
+| `internal/application/*` | `internal/infrastructure/*`, `internal/presentation/*`, `internal/platform/*` |
+| `internal/presentation/*` | `internal/infrastructure/*` |
+| `internal/infrastructure/*` | `internal/presentation/*` |
+| `internal/platform/*` | feature packages (`domain`, `application`, `presentation`, `infrastructure`) |
 
 ---
 
 ## Testing
 
 - `go test ./...` must pass with no external services
-- Integration tests in `internal/store/` skip unless `TEST_DATABASE_URL` is set — run with `make test-integration`
+- Integration tests in `internal/infrastructure/persistence/postgres/` skip unless `TEST_DATABASE_URL` is set — run with `make test-integration`
 - No mocks library — all mocks are hand-written structs
 - Interactive TUI tests use `context.WithTimeout(200ms)` so Bubbletea exits cleanly
 - Read existing tests before writing new ones to follow established patterns
@@ -115,5 +117,5 @@ make test     # unit tests
 - **Instamart integration** (SWGY-15+): product search, cart, checkout via real Swiggy API
 - **Keyboard input wiring**: `HomeView`, `LoginSuccessView`, `InstamartView` have `In io.Reader` fields ready — pass `ssh.Channel` as `In` to enable cursor movement in real sessions
 - **`UpdateCurrentScreen`**: `TerminalSession.CurrentScreen` is set once at session start and never updated — needs a tracker method when screen navigation is wired
-- **Real Swiggy provider**: `internal/provider/swiggy/client.go` is a stub
+- **Real Swiggy provider**: `internal/infrastructure/provider/swiggy/client.go` is a stub
 - **Audit logging**: `audit_events` table is in the schema, no writes yet

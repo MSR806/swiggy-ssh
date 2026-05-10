@@ -6,15 +6,15 @@ import (
 	"os/signal"
 	"syscall"
 
-	"swiggy-ssh/internal/auth"
-	"swiggy-ssh/internal/cache"
-	"swiggy-ssh/internal/config"
-	"swiggy-ssh/internal/crypto"
-	"swiggy-ssh/internal/httpserver"
-	"swiggy-ssh/internal/identity"
-	"swiggy-ssh/internal/logging"
-	"swiggy-ssh/internal/sshserver"
-	"swiggy-ssh/internal/store"
+	"swiggy-ssh/internal/application/auth"
+	"swiggy-ssh/internal/application/identity"
+	cache "swiggy-ssh/internal/infrastructure/cache/redis"
+	"swiggy-ssh/internal/infrastructure/crypto"
+	store "swiggy-ssh/internal/infrastructure/persistence/postgres"
+	"swiggy-ssh/internal/platform/config"
+	"swiggy-ssh/internal/platform/logging"
+	httpserver "swiggy-ssh/internal/presentation/http"
+	sshserver "swiggy-ssh/internal/presentation/ssh"
 )
 
 func main() {
@@ -57,11 +57,12 @@ func main() {
 	loginCodeSvc := cache.NewRedisLoginCodeService(redisClient, cfg.LoginCodeTTL)
 	logger.InfoContext(ctx, "login code service ready", "ttl", cfg.LoginCodeTTL)
 
-	authSvc := auth.NewAuthService(postgresStore, loginCodeSvc)
+	ensureValidAccount := auth.NewEnsureValidAccountUseCase(postgresStore)
 
-	resolver := identity.NewResolver(postgresStore)
-	tracker := identity.NewSessionTracker(postgresStore)
-	server := sshserver.New(cfg.SSHAddr, cfg.SSHHostKeyPath, logger, resolver, tracker, loginCodeSvc, cfg.PublicBaseURL, authSvc)
+	resolveSSHIdentity := identity.NewResolveSSHIdentityUseCase(postgresStore)
+	startTerminalSession := identity.NewStartTerminalSessionUseCase(postgresStore)
+	endTerminalSession := identity.NewEndTerminalSessionUseCase(postgresStore)
+	server := sshserver.New(cfg.SSHAddr, cfg.SSHHostKeyPath, logger, resolveSSHIdentity, startTerminalSession, endTerminalSession, loginCodeSvc, cfg.PublicBaseURL, ensureValidAccount)
 	httpSrv := httpserver.New(cfg.HTTPAddr, logger, loginCodeSvc)
 
 	logger.InfoContext(ctx, "swiggy-ssh scaffold startup",

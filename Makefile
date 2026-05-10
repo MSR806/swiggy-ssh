@@ -37,7 +37,7 @@ test:
 .PHONY: test-integration
 test-integration:
 	@test -n "$(TEST_DATABASE_URL)" || (echo "TEST_DATABASE_URL is required for integration tests" && exit 1)
-	TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test ./internal/store/... -v
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test ./internal/infrastructure/persistence/postgres/... -v
 
 lint:
 	go vet ./...

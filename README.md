@@ -48,9 +48,9 @@ Connect in a second terminal:
 ssh -p 2222 -i ~/.ssh/id_ed25519 localhost
 ```
 
-**First connection** — the terminal shows a URL and a short login code. Open the URL in your browser, submit the code, and the session continues.
+**First Instamart session** — choose Instamart from the terminal home screen, then the app shows a URL and short login code. Open the URL in your browser, submit the code, and the session continues.
 
-**Returning connections** skip the login step entirely — account home shows directly.
+**Returning Instamart sessions** skip the login step while the linked account token is still valid.
 
 ---
 
@@ -95,10 +95,11 @@ Copy `.env.example` to `.env` — all defaults work out of the box for local dev
 ## How the auth flow works
 
 1. **SSH connect** — your Ed25519 public key fingerprint is used to look up or create your user record in Postgres.
-2. **Login code** — a short-lived `XXXX-XXXX` code is issued and displayed in the terminal. Only the SHA-256 hash is stored in Redis — the raw code is never persisted.
-3. **Browser confirm** — open `http://localhost:8080/login`, submit the code. The browser page calls `CompleteLoginCode`; the SSH session polls every 2 seconds.
-4. **Account check** — after confirmation, the auth service either creates a new mock Swiggy account (first time) or validates your existing one. Expired or reconnect-required accounts trigger a fresh login code automatically.
-5. **Returning users** — if your account is already valid, steps 2–4 are skipped entirely. You go straight to the home screen.
+2. **Home / Instamart selection** — the SSH TUI opens at the home screen. Auth starts when the user selects Instamart.
+3. **Login code** — a short-lived `XXXX-XXXX` code is issued and displayed in the terminal when login is required. Only the SHA-256 hash is stored in Redis — the raw code is never persisted.
+4. **Browser confirm** — open `http://localhost:8080/login`, submit the code. The browser page calls `CompleteLoginCode`; the SSH session polls every 2 seconds.
+5. **Account check** — before login, the auth use case only fast-paths existing valid accounts. After browser confirmation, it may create a new mock Swiggy account (first time) or validate your existing one. Expired or reconnect-required accounts trigger a fresh login code automatically.
+6. **Returning users** — if your account is already valid, the login-code step is skipped and the session proceeds to the Instamart placeholder.
 
 ---
 
@@ -110,21 +111,28 @@ cmd/
   swiggy-ssh-migrate/   # DB migration CLI (up / down / drop)
 
 internal/
-  auth/                 # Domain: OAuthAccount, LoginCode, AuthService, TokenEncryptor
-  cache/                # Redis adapter: login-code service, Redis client
-  config/               # Env-based config with safe defaults
-  crypto/               # AES-256-GCM token encryption + NoOp for tests
-  httpserver/           # HTTP delivery adapter: /login page, /health
-  identity/             # SSH key → user resolution, session tracking
-  instamart/            # Instamart domain (stub, in progress)
-  logging/              # Structured slog setup
-  provider/
-    mock/               # In-memory mock provider for local dev + tests
-    swiggy/             # Real Swiggy provider (stub, in progress)
-  sshserver/            # SSH delivery adapter: connection handling, screen routing
-  store/                # Postgres repositories + migrations
-  tui/                  # Terminal screens (Bubbletea v1 + Lipgloss)
+  domain/               # Entities, domain errors, and ports only
+    auth/               # OAuthAccount, LoginCode, auth ports
+    identity/           # User, SSHIdentity, TerminalSession, identity ports
+    instamart/          # Instamart domain (stub, in progress)
+  application/          # Client-agnostic use cases
+    auth/               # EnsureValidAccountUseCase.Execute orchestration
+    identity/           # ResolveSSHIdentity/StartTerminalSession/EndTerminalSession use cases
+  presentation/         # Delivery adapters; no infrastructure imports
+    ssh/                # SSH connection handling and screen routing
+    http/               # /login page and /health handlers
+    tui/                # Terminal screens (Bubbletea v1 + Lipgloss)
+  infrastructure/       # Frameworks/drivers/adapters wired in cmd only
+    cache/redis/        # Redis login-code service and client
+    crypto/             # AES-256-GCM token encryption + NoOp for tests
+    persistence/postgres/ # Postgres repositories + embedded migrations
+    provider/           # Mock and Swiggy provider adapters
+  platform/             # Cross-cutting platform concerns
+    config/             # Env-based config with safe defaults
+    logging/            # Structured slog setup
 ```
+
+Dependency direction is inward: `presentation` may depend on `application` and `domain`, `application` may depend on `domain`, and `domain` imports no repo packages. Infrastructure adapters implement domain/application ports and are wired only from `cmd/`.
 
 ---
 
@@ -162,7 +170,7 @@ make migrate-down
 go run ./cmd/swiggy-ssh-migrate drop
 ```
 
-Migration files live in `internal/store/migrations/` as paired `*.up.sql` / `*.down.sql` files.
+Migration files live in `internal/infrastructure/persistence/postgres/migrations/` as paired `*.up.sql` / `*.down.sql` files.
 
 To reset your local database completely:
 

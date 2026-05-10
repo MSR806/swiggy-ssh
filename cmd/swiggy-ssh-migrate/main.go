@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"swiggy-ssh/internal/config"
-	"swiggy-ssh/internal/store"
+	store "swiggy-ssh/internal/infrastructure/persistence/postgres"
+	"swiggy-ssh/internal/platform/config"
 )
 
 func main() {

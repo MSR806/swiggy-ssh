@@ -31,16 +31,16 @@ They share one thing: a **login code** stored in Redis. That code is the bridge 
 **What it is:** A long-lived asymmetric key pair that identifies the server itself, not any user.
 
 **How it works:**
-- On first boot, `internal/sshserver/hostkey.go` generates an Ed25519 key pair and saves it to disk at `SSH_HOST_KEY_PATH` with permissions `0600`
+- On first boot, `internal/presentation/ssh/hostkey.go` generates an Ed25519 key pair and saves it to disk at `SSH_HOST_KEY_PATH` with permissions `0600`
 - On every subsequent boot, it loads the saved key
-- The key is registered with the SSH library via `serverConfig.AddHostKey(hostSigner)` in `internal/sshserver/server.go:102`
+- The key is registered with the SSH library via `serverConfig.AddHostKey(hostSigner)` in `internal/presentation/ssh/server.go:102`
 - The SSH library uses it automatically during the handshake — no application code needed
 
 **Why it matters:** Without the host key, the SSH library refuses to start. The client uses it to verify it is talking to the real server (TOFU — Trust On First Use on first connection, then `~/.ssh/known_hosts` on subsequent connections).
 
 **Scaling concern:** Each instance generates its own key. Multiple instances behind a load balancer will present different fingerprints to clients, causing scary "fingerprint changed" warnings. Fix: share the host key via a secrets manager (e.g. AWS Secrets Manager) or inject it as an environment variable at deploy time, so all instances use the same key.
 
-**Key file:** `internal/sshserver/hostkey.go`
+**Key file:** `internal/presentation/ssh/hostkey.go`
 
 ---
 
@@ -52,7 +52,7 @@ They share one thing: a **login code** stored in Redis. That code is the bridge 
 - The server accepts **any** public key without pre-registration (`server.go:98-100` — `PublicKeyCallback` always returns success)
 - The server computes a short unique fingerprint from the public key: `ssh.FingerprintSHA256(key)`
 - That fingerprint is stored in `ssh_identities.public_key_fingerprint` in Postgres
-- On reconnect, `resolver.ResolveSSHKey()` looks up the fingerprint → finds the linked user
+- On reconnect, `ResolveSSHIdentityUseCase.Execute(ctx, input)` looks up the fingerprint → finds the linked user
 
 **Why accept any key?** Because user registration happens via Swiggy browser login, not via pre-uploaded keys. The SSH key is used only to identify the session, not to gate access.
 
@@ -60,7 +60,7 @@ They share one thing: a **login code** stored in Redis. That code is the bridge 
 - Public key: long raw string (`ssh-ed25519 AAAA...`)
 - Fingerprint: short hash (`SHA256:uNiVztksCsDhcc0u9e8Bz...`) — easier to store and compare
 
-**Key files:** `internal/sshserver/server.go:150-158`, `internal/identity/identity.go`
+**Key files:** `internal/presentation/ssh/server.go:150-158`, `internal/domain/identity/identity.go`
 
 ---
 
@@ -76,15 +76,16 @@ CANCELLED → expired or user cancelled
 ```
 
 **Flow:**
-1. User connects via SSH
-2. Server generates a random login code, stores it in Redis with a TTL (default 10 minutes, configured via `LOGIN_CODE_TTL`)
-3. Server shows the user: `"Open swiggy.dev/login — Enter code: ABCD-1234"`
-4. Server starts polling every 2 seconds (`pollLoginCode` at `server.go:360`)
-5. User opens browser, visits `/login`, enters the code
-6. HTTP server marks the code as `COMPLETED` in Redis
-7. Poll loop detects `COMPLETED` → session proceeds
+1. User connects via SSH and lands on the home screen
+2. User chooses Instamart
+3. If login is required, server generates a random login code and stores its hash in Redis with a TTL (default 10 minutes, configured via `LOGIN_CODE_TTL`)
+4. Server shows the user: `"Open swiggy.dev/login — Enter code: ABCD-1234"`
+5. Server starts polling every 2 seconds
+6. User opens browser, visits `/login`, enters the code
+7. HTTP server marks the code as `COMPLETED` in Redis
+8. Poll loop detects `COMPLETED` → session proceeds
 
-**Key files:** `internal/sshserver/server.go:283-338`, `internal/auth/service.go`, `internal/httpserver/handlers.go`
+**Key files:** `internal/presentation/ssh/server.go`, `internal/application/auth/ensure_valid_account.go`, `internal/presentation/http/handlers.go`
 
 ---
 
@@ -116,7 +117,7 @@ Server exchanges code for access token
 Marks login code COMPLETED + saves token
 ```
 
-**Key file:** `internal/httpserver/handlers.go`
+**Key file:** `internal/presentation/http/handlers.go`
 
 ---
 
@@ -132,7 +133,7 @@ reconnect_required  → token invalidated externally, trigger re-auth
 revoked             → hard block, user must contact support
 ```
 
-**Re-auth flow (`EnsureValidAccount` at `auth/service.go:52`):**
+**Re-auth flow (`EnsureValidAccountUseCase.Execute` in `auth/ensure_valid_account.go`):**
 ```
 User connects
      ↓
@@ -147,7 +148,7 @@ revoked            → "Access revoked. Contact support."
 
 **Current state:** Tokens are mocked (`mock-token-<userID>`), expiring after 24 hours. Real Swiggy token refresh is not yet implemented.
 
-**Key file:** `internal/auth/service.go`
+**Key file:** `internal/application/auth/ensure_valid_account.go`
 
 ---
 
@@ -182,7 +183,7 @@ terminal_sessions          (one user → many sessions)
   created_at, last_seen_at, ended_at
 ```
 
-**Key files:** `internal/store/migrations/000001_auth_identity.up.sql`, `internal/store/postgres.go`
+**Key files:** `internal/infrastructure/persistence/postgres/migrations/000001_auth_identity.up.sql`, `internal/infrastructure/persistence/postgres/postgres.go`
 
 ---
 
@@ -195,9 +196,9 @@ terminal_sessions          (one user → many sessions)
 **How:**
 - Encryption key: 32-byte key, base64url-encoded, set via `TOKEN_ENCRYPTION_KEY` environment variable
 - Local dev fallback: `DefaultDevTokenEncryptionKey` in `config.go:21` — **publicly known, never use in production**
-- Decrypt only happens in memory at runtime (`store/postgres.go:381`)
+- Decrypt only happens in memory at runtime inside the Postgres persistence adapter
 
-**Key files:** `internal/crypto/aes.go`, `internal/config/config.go`
+**Key files:** `internal/infrastructure/crypto/aes.go`, `internal/platform/config/config.go`
 
 ---
 
@@ -214,20 +215,22 @@ terminal_sessions          (one user → many sessions)
    - Computes fingerprint from user's public key
    - Looks up fingerprint in DB → resolves user identity (or unknown)
         ↓
-4. Server generates login code (stored in Redis, 10min TTL)
+4. User chooses Instamart from the terminal home screen
+        ↓
+5. If login is required, server generates a login code (stored hashed in Redis, 10min TTL)
    - Shows user: "Open swiggy.dev/login — Enter code: ABCD-1234"
    - Starts polling Redis every 2 seconds
         ↓
-5. User opens browser → visits swiggy.dev/login
+6. User opens browser → visits swiggy.dev/login
    - Enters code (future: redirected to Swiggy OAuth first)
    - Code marked COMPLETED in Redis
         ↓
-6. Poll loop detects COMPLETED
-   - EnsureValidAccount called:
-     - First time → creates user + SSH identity + mock OAuth account
+7. Poll loop detects COMPLETED
+   - `EnsureValidAccountUseCase.Execute` called:
+     - First time → creates mock OAuth account for the resolved user
      - Returning  → checks token validity, re-auths if expired
         ↓
-7. "Welcome to swiggy.dev!" shown in terminal
+8. Terminal proceeds to the current Instamart placeholder
 ```
 
 ---
@@ -236,10 +239,10 @@ terminal_sessions          (one user → many sessions)
 
 | Missing piece | Where to add it |
 |---------------|----------------|
-| Swiggy OAuth login redirect | `internal/httpserver/handlers.go:handleLoginGet` |
-| Swiggy OAuth callback handler | New route `GET /login/callback` in `internal/httpserver/server.go` |
-| Real Swiggy token exchange | `internal/provider/swiggy/client.go` — implement `Client` interface |
-| Real token refresh on re-auth | `internal/auth/service.go:refreshMockAccount` |
+| Swiggy OAuth login redirect | `internal/presentation/http/handlers.go:handleLoginGet` |
+| Swiggy OAuth callback handler | New route `GET /login/callback` in `internal/presentation/http/server.go` |
+| Real Swiggy token exchange | `internal/infrastructure/provider/swiggy/client.go` — implement `Client` interface |
+| Real token refresh on re-auth | `internal/application/auth/ensure_valid_account.go:refreshMockAccount` |
 
 ---
 
