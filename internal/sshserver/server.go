@@ -258,12 +258,18 @@ func (s *SSHServer) handleSessionChannel(ctx context.Context, conn *ssh.ServerCo
 	defer ch.Close()
 
 	started := false
+	viewport := tui.Viewport{}
 	for req := range reqs {
 		switch req.Type {
 		case "shell", "exec":
 			started = true
 			_ = req.Reply(true, nil)
-		case "pty-req", "env", "window-change":
+		case "pty-req", "window-change":
+			if parsed, ok := parseViewportRequest(req); ok {
+				viewport = parsed
+			}
+			_ = req.Reply(true, nil)
+		case "env":
 			_ = req.Reply(true, nil)
 		default:
 			_ = req.Reply(false, nil)
@@ -277,6 +283,7 @@ func (s *SSHServer) handleSessionChannel(ctx context.Context, conn *ssh.ServerCo
 	if !started {
 		return
 	}
+	go discardSessionRequests(reqs)
 
 	fallbackMsg := fmt.Sprintf(
 		"Welcome to swiggy-ssh (MVP skeleton).\nuser=%s\nremote=%s\nkey_type=%s\nkey_fingerprint=%s\n\n",
@@ -286,7 +293,7 @@ func (s *SSHServer) handleSessionChannel(ctx context.Context, conn *ssh.ServerCo
 		fingerprint,
 	)
 
-	s.runSession(ctx, ch, fallbackMsg, terminalSessionID, fingerprint, resolvedUserID)
+	s.runSession(tui.WithViewport(ctx, viewport), ch, fallbackMsg, terminalSessionID, fingerprint, resolvedUserID)
 
 	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 0}))
 
@@ -300,6 +307,59 @@ func (s *SSHServer) handleSessionChannel(ctx context.Context, conn *ssh.ServerCo
 	)
 }
 
+type ptyRequestPayload struct {
+	Term          string
+	Columns       uint32
+	Rows          uint32
+	WidthPixels   uint32
+	HeightPixels  uint32
+	TerminalModes string
+}
+
+type windowChangePayload struct {
+	Columns      uint32
+	Rows         uint32
+	WidthPixels  uint32
+	HeightPixels uint32
+}
+
+func parseViewportRequest(req *ssh.Request) (tui.Viewport, bool) {
+	switch req.Type {
+	case "pty-req":
+		var payload ptyRequestPayload
+		if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+			return tui.Viewport{}, false
+		}
+		return viewportFromCells(payload.Columns, payload.Rows)
+	case "window-change":
+		var payload windowChangePayload
+		if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+			return tui.Viewport{}, false
+		}
+		return viewportFromCells(payload.Columns, payload.Rows)
+	default:
+		return tui.Viewport{}, false
+	}
+}
+
+func viewportFromCells(columns, rows uint32) (tui.Viewport, bool) {
+	if columns == 0 || rows == 0 {
+		return tui.Viewport{}, false
+	}
+	return tui.Viewport{Width: int(columns), Height: int(rows)}, true
+}
+
+func discardSessionRequests(reqs <-chan *ssh.Request) {
+	for req := range reqs {
+		switch req.Type {
+		case "window-change", "env":
+			_ = req.Reply(true, nil)
+		default:
+			_ = req.Reply(false, nil)
+		}
+	}
+}
+
 // runSession drives the screen routing logic for an established SSH session channel.
 // It is called after the request loop confirms a shell/exec was started.
 func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg, terminalSessionID, fingerprint, resolvedUserID string) {
@@ -308,8 +368,19 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 		_, _ = io.WriteString(ch, "Session handler placeholder complete. Goodbye.\n")
 		return
 	}
+	if err := tui.EnterFullscreen(ch); err != nil {
+		s.logger.WarnContext(ctx, "failed to enter fullscreen tui", "error", err)
+		return
+	}
+	defer func() { _ = tui.ExitFullscreen(ch) }()
+
+	render := func(renderCtx context.Context, view tui.View) {
+		_ = tui.ClearScreen(ch)
+		_ = view.Render(renderCtx, ch)
+	}
 
 	// === HOME SCREEN — always shown first ===
+	_ = tui.ClearScreen(ch)
 	action, err := tui.HomeView{In: ch}.RenderWithAction(ctx, ch)
 	if err != nil || action != tui.HomeActionInstamart {
 		// User quit or selected a coming-soon item — end session.
@@ -322,11 +393,11 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 	if s.authSvc != nil && resolvedUserID != "" {
 		_, fastErr := s.authSvc.EnsureValidAccount(ctx, resolvedUserID, terminalSessionID, nil)
 		if fastErr == nil {
-			_ = tui.InstamartPlaceholderView{UserID: resolvedUserID}.Render(ctx, ch)
+			render(ctx, tui.InstamartPlaceholderView{UserID: resolvedUserID, In: ch})
 			return
 		}
 		if errors.Is(fastErr, auth.ErrAccountRevoked) {
-			_ = tui.RevokedView{}.Render(ctx, ch)
+			render(ctx, tui.RevokedView{})
 			return
 		}
 		// expired/reconnect_required/not-found — fall through to login flow.
@@ -336,26 +407,26 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 	rawCode, _, issueErr := s.loginCodeSvc.IssueLoginCode(ctx, resolvedUserID, terminalSessionID)
 	if issueErr != nil {
 		s.logger.WarnContext(ctx, "failed to issue login code", "error", issueErr)
-		_ = tui.ErrorView{Message: "Login unavailable. Please try again later."}.Render(ctx, ch)
+		render(ctx, tui.ErrorView{Message: "Login unavailable. Please try again later."})
 		return
 	}
 
 	loginURL := s.publicBaseURL + "/login"
-	_ = tui.LoginWaitingView{LoginURL: loginURL, RawCode: rawCode}.Render(ctx, ch)
+	render(ctx, tui.LoginWaitingView{LoginURL: loginURL, RawCode: rawCode})
 
 	completed, pollErr := pollLoginCode(ctx, s.loginCodeSvc, rawCode, s.logger)
 	if pollErr != nil {
-		_ = tui.ErrorView{Message: "Login polling error. Session ending."}.Render(ctx, ch)
+		render(ctx, tui.ErrorView{Message: "Login polling error. Session ending."})
 		return
 	}
 	if !completed {
-		_ = tui.ErrorView{Message: "Login expired or cancelled. Please reconnect."}.Render(ctx, ch)
+		render(ctx, tui.ErrorView{Message: "Login expired or cancelled. Please reconnect."})
 		return
 	}
 
 	// Login confirmed — check/establish account.
 	if s.authSvc == nil || resolvedUserID == "" {
-		_ = tui.LoginSuccessView{}.Render(ctx, ch)
+		render(ctx, tui.LoginSuccessView{})
 		return
 	}
 
@@ -364,7 +435,7 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 		if reauthIssueErr != nil {
 			return fmt.Errorf("issue reauth login code: %w", reauthIssueErr)
 		}
-		_ = tui.ReconnectView{RawCode: newCode}.Render(reauthCtx, ch)
+		render(reauthCtx, tui.ReconnectView{RawCode: newCode})
 		reauthCompleted, reauthPollErr := pollLoginCode(reauthCtx, s.loginCodeSvc, newCode, s.logger)
 		if reauthPollErr != nil {
 			return fmt.Errorf("poll reauth: %w", reauthPollErr)
@@ -378,17 +449,17 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 	result, authErr := s.authSvc.EnsureValidAccount(ctx, resolvedUserID, terminalSessionID, reauthFn)
 	switch {
 	case errors.Is(authErr, auth.ErrAccountRevoked):
-		_ = tui.RevokedView{}.Render(ctx, ch)
+		render(ctx, tui.RevokedView{})
 	case authErr != nil:
 		s.logger.WarnContext(ctx, "ensure valid account failed", "error", authErr)
-		_ = tui.ErrorView{Message: "Auth check failed. Please reconnect."}.Render(ctx, ch)
+		render(ctx, tui.ErrorView{Message: "Auth check failed. Please reconnect."})
 	default:
-		_ = tui.LoginSuccessView{
+		render(ctx, tui.LoginSuccessView{
 			IsFirstAuth: result.IsFirstAuth,
 			WasReauth:   result.WasReauth,
 			Account:     result.Account,
-		}.Render(ctx, ch)
-		_ = tui.InstamartPlaceholderView{UserID: resolvedUserID}.Render(ctx, ch)
+		})
+		render(ctx, tui.InstamartPlaceholderView{UserID: resolvedUserID, In: ch})
 	}
 }
 
@@ -418,7 +489,7 @@ func pollLoginCode(ctx context.Context, svc auth.LoginCodeService, rawCode strin
 				return true, nil
 			case auth.LoginCodeStatusCancelled:
 				return false, nil
-			// LoginCodeStatusPending: keep polling
+				// LoginCodeStatusPending: keep polling
 			}
 		}
 	}

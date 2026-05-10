@@ -91,9 +91,10 @@ Ports & Adapters (Clean Architecture). Three layers:
 ```bash
 make up       # full stack via Docker Compose (builds image, runs migrations, starts everything)
 make down     # stop everything
+make reset    # wipe all volumes and containers (fresh start)
 
-make deps-up  # deps only (Postgres + Redis) for local dev
-make dev      # run app on host (after deps-up + make migrate)
+make dev      # run app on host (requires make up first for Postgres + Redis)
+make migrate  # apply pending migrations against running Postgres
 make test     # unit tests
 ```
 

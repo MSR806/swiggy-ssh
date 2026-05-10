@@ -8,6 +8,8 @@ ssh swiggy.dev
 
 > **Status**: Auth & identity foundation complete. Instamart integration in progress.
 
+![swiggy.ssh home screen](assets/image.png)
+
 ---
 
 ## What it is
@@ -54,7 +56,7 @@ ssh -p 2222 -i ~/.ssh/id_ed25519 localhost
 
 ## Commands
 
-### Full stack (Docker Compose)
+### Docker Compose
 
 | Command | What it does |
 |---|---|
@@ -63,19 +65,15 @@ ssh -p 2222 -i ~/.ssh/id_ed25519 localhost
 | `make build` | Rebuild the app image without starting |
 | `make logs` | Tail app logs |
 | `make ps` | Show container status |
+| `make reset` | Wipe all volumes and containers (fresh start) |
 
-### Local dev (app on host, deps in Docker)
+### Local dev (app on host)
 
 | Command | What it does |
 |---|---|
-| `make deps-up` | Start Postgres + Redis only |
-| `make deps-down` | Stop Postgres + Redis |
-| `make deps-reset` | Wipe all local data (fresh start) |
-| `make deps-ps` | Check container status |
-| `make deps-logs` | Tail Postgres + Redis logs |
+| `make dev` | Run the app on host (requires Postgres + Redis running) |
 | `make migrate` | Apply all pending DB migrations |
 | `make migrate-down` | Roll back one migration step |
-| `make dev` | Run the app on host (requires deps-up + migrate first) |
 
 ### Code
 
@@ -90,29 +88,7 @@ ssh -p 2222 -i ~/.ssh/id_ed25519 localhost
 
 ## Environment variables
 
-Copy `.env.example` to `.env` — all defaults work out of the box for local development.
-
-| Variable | Default | Description |
-|---|---|---|
-| `APP_ENV` | `local` | Environment name. Set to `production` to enable prod safeguards. |
-| `SSH_ADDR` | `:2222` | SSH server listen address |
-| `HTTP_ADDR` | `:8080` | HTTP server listen address (browser login page) |
-| `PUBLIC_BASE_URL` | `http://localhost:8080` | Base URL shown to SSH users in the login prompt |
-| `DATABASE_URL` | `postgres://swiggy:swiggy@localhost:5432/swiggy_ssh?sslmode=disable` | Postgres connection string |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection string |
-| `LOGIN_CODE_TTL` | `10m` | How long a login code stays valid |
-| `TOKEN_ENCRYPTION_KEY` | *(dev default)* | Base64url-encoded 32-byte AES-256 key for token encryption. **Set a real key in production.** |
-| `SSH_HOST_KEY_PATH` | `.local/ssh_host_ed25519_key` | Path to the persistent SSH host key |
-| `POSTGRES_PORT` | `5432` | Host port for the Compose Postgres container |
-| `REDIS_PORT` | `6379` | Host port for the Compose Redis container |
-
-### Generate a production encryption key
-
-```bash
-openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
-```
-
-Set the output as `TOKEN_ENCRYPTION_KEY` in your production environment. The default dev key is publicly known from the source code and must never be used in production — the server refuses to start with it when `APP_ENV=production`.
+Copy `.env.example` to `.env` — all defaults work out of the box for local development. Every variable is documented with inline comments in `.env.example`.
 
 ---
 
@@ -157,10 +133,10 @@ internal/
 If you prefer a faster code/run loop with the app running directly on your machine:
 
 ```bash
-# Start only the dependencies
-make deps-up
+# Start Postgres and Redis via Docker
+make up
 
-# Apply migrations
+# Apply migrations against the running Postgres
 make migrate
 
 # Run the app
@@ -191,9 +167,8 @@ Migration files live in `internal/store/migrations/` as paired `*.up.sql` / `*.d
 To reset your local database completely:
 
 ```bash
-make deps-reset   # wipes Docker volumes
-make deps-up      # start fresh containers
-make migrate      # re-apply migrations
+make reset    # wipes Docker volumes and containers
+make up       # start fresh with migrations applied automatically
 ```
 
 ---
@@ -232,7 +207,7 @@ PUBLIC_BASE_URL=http://localhost:8081
 For local dev (app on host), use matching env vars when starting:
 
 ```bash
-POSTGRES_PORT=5433 REDIS_PORT=6380 make deps-up
+POSTGRES_PORT=5433 REDIS_PORT=6380 make up
 DATABASE_URL=postgres://swiggy:swiggy@localhost:5433/swiggy_ssh?sslmode=disable \
 REDIS_URL=redis://localhost:6380/0 make dev
 ```
@@ -254,7 +229,7 @@ The server isn't running. Run `make up` (Docker) or `make dev` (local) first.
 The 10-minute TTL elapsed, or the code was already used. Reconnect via SSH to get a new code.
 
 **App can't connect to Postgres or Redis**
-Check containers are healthy: `make deps-ps`. Verify `DATABASE_URL` and `REDIS_URL` match your port settings.
+Check containers are healthy: `make ps`. Verify `DATABASE_URL` and `REDIS_URL` match your port settings.
 
 **Simulate reconnect-required**
 ```sql

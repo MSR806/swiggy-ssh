@@ -36,13 +36,56 @@ func TestHomeViewRendersMenuItems(t *testing.T) {
 		"Food",
 		"Reorder usuals",
 		"coming soon",
-		"↑/↓ move",
+		"j/k move",
 		"● Connected SSH",
 		"███████╗", // first row of ASCII logo
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in HomeView output", want)
 		}
+	}
+}
+
+func TestHomeViewUsesSwiggyOrange(t *testing.T) {
+	ctx, cancel := renderCtx()
+	defer cancel()
+	var buf bytes.Buffer
+	if err := (tui.HomeView{}).Render(ctx, &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "\x1b[38;2;252;128;25m") {
+		t.Fatal("expected home view to render Swiggy orange ANSI color")
+	}
+}
+
+func TestHomeViewCentersInViewport(t *testing.T) {
+	ctx, cancel := renderCtx()
+	defer cancel()
+	ctx = tui.WithViewport(ctx, tui.Viewport{Width: 100, Height: 30})
+
+	var buf bytes.Buffer
+	if err := (tui.HomeView{}).Render(ctx, &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "\r\n          ┌") {
+		t.Fatal("expected home view to be vertically and horizontally centered")
+	}
+}
+
+func TestInstamartPlaceholderViewUsesInput(t *testing.T) {
+	var buf bytes.Buffer
+	err := tui.InstamartPlaceholderView{
+		UserID: "user-1",
+		In:     strings.NewReader("q"),
+	}.Render(context.Background(), &buf)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Instamart") {
+		t.Fatal("expected Instamart screen output")
 	}
 }
 
@@ -102,7 +145,7 @@ func TestLoginSuccessViewShowsSignedInAs(t *testing.T) {
 		"Alice",
 		"alice@example.com",
 		"Instamart",
-		"↑/↓ move",
+		"j/k move",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in LoginSuccessView output", want)
@@ -182,7 +225,7 @@ func TestInstamartViewRendersAddress(t *testing.T) {
 	for _, want := range []string{
 		"Work",
 		"Koramangala",
-		"Cart: 3 items",
+		"3 items",
 		"Search products",
 		"/ search",
 	} {
