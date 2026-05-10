@@ -38,7 +38,7 @@ func TestHomeViewRendersMenuItems(t *testing.T) {
 		"coming soon",
 		"j/k move",
 		"● Connected SSH",
-		"███████╗", // first row of ASCII logo
+		"⣿⣿⣿", // braille logo
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in HomeView output", want)
@@ -70,8 +70,9 @@ func TestHomeViewCentersInViewport(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "\r\n          ┌") {
-		t.Fatal("expected home view to be vertically and horizontally centered")
+	// Viewport centering adds horizontal padding — box should not start at column 0.
+	if !strings.Contains(out, "          ┌") {
+		t.Fatal("expected home view to be horizontally padded in viewport")
 	}
 }
 

@@ -36,6 +36,8 @@ var homeItems = []homeItem{
 	{"Account", false},
 }
 
+var homeLogoGradient = []string{"#FC8019", "#FF8F1F", "#FFA12B", "#FFB347"}
+
 type homeModel struct {
 	ctx      context.Context
 	viewport Viewport
@@ -80,25 +82,50 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m homeModel) View() string {
 	logo := []string{
+		"    ⢀⣠⣴⣶⣶⣶⣶⣦⣄⡀    ",
+		"  ⢀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀ ",
+		"  ⣾⣿⣿⣿⣿⣿⣿⡏⢹⣿⣿⣿⣿⣷ ",
+		" ⢰⣿⣿⣿⣿⣿⣿⣿⡇⠸⠿⠿⠿⠿⠟⠃",
+		" ⠈⣿⣿⣿⣿⣿⣿⣿⣷⣶⣶⣶⣶⣶⣤ ",
+		"  ⢹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡟ ",
+		"   ⠻⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠁ ",
+		"    ⢶⣶⣶⣶⣤⢸⣿⣿⣿⡿⠁  ",
+		"     ⠹⣿⣿⣿⣼⣿⣿⡟⠁   ",
+		"      ⠈⢿⣿⣿⡿⠋     ",
+		"        ⠹⠏        ",
+	}
+	wordmark := []string{
 		"███████╗██╗    ██╗██╗ ██████╗  ██████╗ ██╗   ██╗",
 		"██╔════╝██║    ██║██║██╔════╝ ██╔════╝ ╚██╗ ██╔╝",
-		"███████╗██║ █╗ ██║██║██║  ███╗██║  ███╗ ╚████╔╝",
-		"╚════██║██║███╗██║██║██║   ██║██║   ██║  ╚██╔╝",
-		"███████║╚███╔███╔╝██║╚██████╔╝╚██████╔╝   ██║",
-		"╚══════╝ ╚══╝╚══╝ ╚═╝ ╚═════╝  ╚═════╝    ╚═╝",
+		"███████╗██║ █╗ ██║██║██║  ███╗██║  ███╗ ╚████╔╝ ",
+		"╚════██║██║███╗██║██║██║   ██║██║   ██║  ╚██╔╝  ",
+		"███████║╚███╔███╔╝██║╚██████╔╝╚██████╔╝   ██║   ",
+		"╚══════╝ ╚══╝╚══╝ ╚═╝ ╚═════╝  ╚═════╝    ╚═╝   ",
 	}
+
+	// Render logo and wordmark side-by-side.
+	// Logo: 11 lines tall. Wordmark: 6 lines tall.
+	// Vertically center wordmark: 2 blank lines top + 6 wordmark + 3 blank = 11 rows.
+	const logoLines = 11
+	const wordmarkLines = 6
+	const wordmarkWidth = 48
+	const topPad = (logoLines - wordmarkLines) / 2 // = 2
 
 	var sb strings.Builder
 	sb.WriteString(top())
 	sb.WriteString(headerLine(" swiggy.ssh", connStyle.Render("● Connected SSH ")))
 	sb.WriteString(divider())
-	sb.WriteString(line(""))
-	for _, l := range logo {
-		sb.WriteString(centeredLine(brandStyle.Render(l)))
+	for i, logoLine := range logo {
+		wmIdx := i - topPad
+		right := strings.Repeat(" ", wordmarkWidth)
+		if wmIdx >= 0 && wmIdx < wordmarkLines {
+			right = gradientRender(wordmark[wmIdx], homeLogoGradient, wmIdx, wordmarkLines)
+		}
+		sb.WriteString(centeredLine(gradientRender(logoLine, homeLogoGradient, i, logoLines) + "  " + right))
 	}
 	sb.WriteString(line(""))
-	sb.WriteString(line(creamStyle.Render("                    Order groceries from your terminal")))
-	sb.WriteString(line(accentStyle.Render("                    Instamart, straight from SSH")))
+	sb.WriteString(centeredLine(creamStyle.Render("Order groceries from your terminal")))
+	sb.WriteString(centeredLine(mutedStyle.Render("Instamart · straight from SSH")))
 	sb.WriteString(line(""))
 	sb.WriteString(divider())
 	sb.WriteString(line(brandStyle.Render(" What would you like to do?")))

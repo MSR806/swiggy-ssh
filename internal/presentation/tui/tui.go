@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -50,6 +52,53 @@ var (
 	codeStyle    = lipgloss.NewStyle().Bold(true)
 	connStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00AA44")) // green
 )
+
+func gradientRender(content string, colors []string, index, total int) string {
+	if len(colors) == 0 {
+		return content
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(gradientColor(colors, index, total))).Render(content)
+}
+
+func gradientColor(colors []string, index, total int) string {
+	if len(colors) == 1 || total <= 1 {
+		return colors[0]
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index >= total {
+		index = total - 1
+	}
+
+	segments := len(colors) - 1
+	stepCount := total - 1
+	scaled := index * segments
+	start := scaled / stepCount
+	frac := float64(scaled%stepCount) / float64(stepCount)
+	if start >= segments {
+		return colors[len(colors)-1]
+	}
+
+	r1, g1, b1 := parseHexColor(colors[start])
+	r2, g2, b2 := parseHexColor(colors[start+1])
+	return fmt.Sprintf("#%02X%02X%02X", lerp(r1, r2, frac), lerp(g1, g2, frac), lerp(b1, b2, frac))
+}
+
+func parseHexColor(color string) (int, int, int) {
+	color = strings.TrimPrefix(color, "#")
+	if len(color) != 6 {
+		return 0, 0, 0
+	}
+	r, _ := strconv.ParseInt(color[0:2], 16, 0)
+	g, _ := strconv.ParseInt(color[2:4], 16, 0)
+	b, _ := strconv.ParseInt(color[4:6], 16, 0)
+	return int(r), int(g), int(b)
+}
+
+func lerp(from, to int, frac float64) int {
+	return from + int(float64(to-from)*frac)
+}
 
 func init() {
 	// SSH output is an ssh.Channel, so Lip Gloss cannot reliably detect the
