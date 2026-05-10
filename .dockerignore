@@ -1,0 +1,12 @@
+.git
+.local/
+.data/
+.env
+
+# test artifacts
+**/*_test.go
+
+# editor
+.idea/
+.vscode/
+*.swp

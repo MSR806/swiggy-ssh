@@ -1,0 +1,3 @@
+ALTER TABLE terminal_sessions
+  ADD COLUMN IF NOT EXISTS client TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS client_session_id TEXT NOT NULL DEFAULT '';

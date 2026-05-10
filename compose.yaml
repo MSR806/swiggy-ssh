@@ -1,0 +1,82 @@
+services:
+
+  # ── runtime dependencies ──────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: swiggy-ssh-postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: swiggy_ssh
+      POSTGRES_USER: swiggy
+      POSTGRES_PASSWORD: swiggy
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swiggy -d swiggy_ssh"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    container_name: swiggy-ssh-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # ── migrate: runs once, then exits ───────────────────────────────────────
+
+  migrate:
+    build: .
+    container_name: swiggy-ssh-migrate
+    command: ["./swiggy-migrate", "up"]
+    environment:
+      DATABASE_URL: postgres://swiggy:swiggy@postgres:5432/swiggy_ssh?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ── app: SSH + HTTP server ────────────────────────────────────────────────
+
+  app:
+    build: .
+    container_name: swiggy-ssh-app
+    ports:
+      - "${SSH_PORT:-2222}:2222"
+      - "${HTTP_PORT:-8080}:8080"
+    environment:
+      APP_ENV: local
+      DATABASE_URL: postgres://swiggy:swiggy@postgres:5432/swiggy_ssh?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      SSH_ADDR: ":2222"
+      HTTP_ADDR: ":8080"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost:8080}"
+      LOGIN_CODE_TTL: "${LOGIN_CODE_TTL:-10m}"
+      TOKEN_ENCRYPTION_KEY: "${TOKEN_ENCRYPTION_KEY:-c3dpZ2d5LXNzaC1sb2NhbC1kZXYta2V5LTMyYnl0ZXM}"
+      SSH_HOST_KEY_PATH: ".local/ssh_host_ed25519_key"
+    volumes:
+      - ssh_host_key:/app/.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  ssh_host_key:

@@ -1,0 +1,271 @@
+---
+name: swiggy-ssh-auth
+description: Use when building or modifying the end-to-end SSH + browser authentication flow for swiggy-ssh. Covers host key management, SSH public key identity, login code flow, OAuth token lifecycle, re-authentication, HTTP login page, and database schema.
+license: MIT
+metadata:
+  author: swiggy-ssh team
+---
+
+# swiggy-ssh Authentication Flow
+
+This skill documents the complete end-to-end authentication architecture of swiggy-ssh — from a user running `ssh swiggy.dev` to a fully authenticated session backed by a Swiggy OAuth account.
+
+---
+
+## Architecture Overview
+
+Two servers run in parallel:
+
+```
+swiggy.dev
+├── SSH server  (port 2222)  ← user connects via terminal
+└── HTTP server (port 8080)  ← user opens in browser to complete login
+```
+
+They share one thing: a **login code** stored in Redis. That code is the bridge between the terminal session and the browser login.
+
+---
+
+## Concept 1: Server Identity — Host Key
+
+**What it is:** A long-lived asymmetric key pair that identifies the server itself, not any user.
+
+**How it works:**
+- On first boot, `internal/sshserver/hostkey.go` generates an Ed25519 key pair and saves it to disk at `SSH_HOST_KEY_PATH` with permissions `0600`
+- On every subsequent boot, it loads the saved key
+- The key is registered with the SSH library via `serverConfig.AddHostKey(hostSigner)` in `internal/sshserver/server.go:102`
+- The SSH library uses it automatically during the handshake — no application code needed
+
+**Why it matters:** Without the host key, the SSH library refuses to start. The client uses it to verify it is talking to the real server (TOFU — Trust On First Use on first connection, then `~/.ssh/known_hosts` on subsequent connections).
+
+**Scaling concern:** Each instance generates its own key. Multiple instances behind a load balancer will present different fingerprints to clients, causing scary "fingerprint changed" warnings. Fix: share the host key via a secrets manager (e.g. AWS Secrets Manager) or inject it as an environment variable at deploy time, so all instances use the same key.
+
+**Key file:** `internal/sshserver/hostkey.go`
+
+---
+
+## Concept 2: User Identity — SSH Public Key + Fingerprint
+
+**What it is:** Each user has their own SSH key pair generated on their own machine. The public key (padlock) is sent to the server during connection. The private key never leaves the user's machine.
+
+**How it works:**
+- The server accepts **any** public key without pre-registration (`server.go:98-100` — `PublicKeyCallback` always returns success)
+- The server computes a short unique fingerprint from the public key: `ssh.FingerprintSHA256(key)`
+- That fingerprint is stored in `ssh_identities.public_key_fingerprint` in Postgres
+- On reconnect, `resolver.ResolveSSHKey()` looks up the fingerprint → finds the linked user
+
+**Why accept any key?** Because user registration happens via Swiggy browser login, not via pre-uploaded keys. The SSH key is used only to identify the session, not to gate access.
+
+**Fingerprint vs public key:**
+- Public key: long raw string (`ssh-ed25519 AAAA...`)
+- Fingerprint: short hash (`SHA256:uNiVztksCsDhcc0u9e8Bz...`) — easier to store and compare
+
+**Key files:** `internal/sshserver/server.go:150-158`, `internal/identity/identity.go`
+
+---
+
+## Concept 3: Login Code Flow
+
+**What it is:** A short one-time code (like an OTP) that bridges the SSH terminal session to the browser login.
+
+**States:**
+```
+PENDING   → generated, waiting for user to login in browser
+COMPLETED → user logged in successfully
+CANCELLED → expired or user cancelled
+```
+
+**Flow:**
+1. User connects via SSH
+2. Server generates a random login code, stores it in Redis with a TTL (default 10 minutes, configured via `LOGIN_CODE_TTL`)
+3. Server shows the user: `"Open swiggy.dev/login — Enter code: ABCD-1234"`
+4. Server starts polling every 2 seconds (`pollLoginCode` at `server.go:360`)
+5. User opens browser, visits `/login`, enters the code
+6. HTTP server marks the code as `COMPLETED` in Redis
+7. Poll loop detects `COMPLETED` → session proceeds
+
+**Key files:** `internal/sshserver/server.go:283-338`, `internal/auth/service.go`, `internal/httpserver/handlers.go`
+
+---
+
+## Concept 4: HTTP Login Page
+
+**What it is:** A minimal web server with 3 routes that serves the browser-facing login form.
+
+**Routes:**
+```
+GET  /health  → {"status":"ok"} — health check
+GET  /login   → shows login form (enter code from terminal)
+POST /login   → submits code → marks it COMPLETED in Redis → shows success page
+```
+
+**Current state:** The `/login` page accepts a code but does NOT yet redirect to Swiggy OAuth. Anyone who knows the code can complete login. The Swiggy OAuth integration needs to be added here.
+
+**Planned flow (when Swiggy is integrated):**
+```
+User visits /login
+      ↓
+Redirect to Swiggy OAuth login page
+      ↓
+User logs in with Swiggy credentials
+      ↓
+Swiggy redirects back to /login with auth code
+      ↓
+Server exchanges code for access token
+      ↓
+Marks login code COMPLETED + saves token
+```
+
+**Key file:** `internal/httpserver/handlers.go`
+
+---
+
+## Concept 5: OAuth Token Lifecycle & Re-authentication
+
+**What it is:** After browser login, the server stores a Swiggy OAuth access token linked to the user. Tokens expire and must be refreshed via re-authentication.
+
+**Token states:**
+```
+active              → valid, no action needed
+expired             → token TTL passed, trigger re-auth
+reconnect_required  → token invalidated externally, trigger re-auth
+revoked             → hard block, user must contact support
+```
+
+**Re-auth flow (`EnsureValidAccount` at `auth/service.go:52`):**
+```
+User connects
+     ↓
+Check token status
+     ↓
+active             → "Welcome back!"
+expired/reconnect  → show new login code in terminal
+                     user logs in browser again
+                     new token saved → session continues
+revoked            → "Access revoked. Contact support."
+```
+
+**Current state:** Tokens are mocked (`mock-token-<userID>`), expiring after 24 hours. Real Swiggy token refresh is not yet implemented.
+
+**Key file:** `internal/auth/service.go`
+
+---
+
+## Concept 6: Database Schema
+
+Four linked tables in Postgres:
+
+```
+users
+  id, display_name, email, created_at, last_seen_at
+
+ssh_identities             (one user → many SSH keys)
+  id, user_id → users.id
+  public_key_fingerprint   ← unique, indexed, used for lookup
+  public_key               ← full public key stored
+  label                    ← e.g. "MacBook Pro"
+  first_seen_at, last_seen_at
+  revoked_at               ← set when key is revoked (e.g. lost laptop)
+
+oauth_accounts             (one user → one account per provider)
+  id, user_id → users.id
+  provider                 ← e.g. "swiggy"
+  provider_user_id
+  encrypted_access_token   ← AES-256-GCM encrypted, never stored in plaintext
+  token_expires_at, scopes, status
+
+terminal_sessions          (one user → many sessions)
+  id, user_id → users.id
+  ssh_identity_id → ssh_identities.id
+  ssh_fingerprint
+  current_screen, selected_address_id
+  created_at, last_seen_at, ended_at
+```
+
+**Key files:** `internal/store/migrations/000001_auth_identity.up.sql`, `internal/store/postgres.go`
+
+---
+
+## Concept 7: Token Encryption
+
+**What it is:** OAuth access tokens are encrypted with AES-256-GCM before being written to the database, and decrypted in memory when needed.
+
+**Why:** If the database is compromised, encrypted tokens are useless without the encryption key. The key is stored separately.
+
+**How:**
+- Encryption key: 32-byte key, base64url-encoded, set via `TOKEN_ENCRYPTION_KEY` environment variable
+- Local dev fallback: `DefaultDevTokenEncryptionKey` in `config.go:21` — **publicly known, never use in production**
+- Decrypt only happens in memory at runtime (`store/postgres.go:381`)
+
+**Key files:** `internal/crypto/aes.go`, `internal/config/config.go`
+
+---
+
+## Complete End-to-End Flow
+
+```
+1. ssh swiggy.dev
+        ↓
+2. SSH handshake
+   - Client verifies server host key fingerprint (TOFU)
+   - Encrypted tunnel established
+        ↓
+3. Server accepts any SSH public key
+   - Computes fingerprint from user's public key
+   - Looks up fingerprint in DB → resolves user identity (or unknown)
+        ↓
+4. Server generates login code (stored in Redis, 10min TTL)
+   - Shows user: "Open swiggy.dev/login — Enter code: ABCD-1234"
+   - Starts polling Redis every 2 seconds
+        ↓
+5. User opens browser → visits swiggy.dev/login
+   - Enters code (future: redirected to Swiggy OAuth first)
+   - Code marked COMPLETED in Redis
+        ↓
+6. Poll loop detects COMPLETED
+   - EnsureValidAccount called:
+     - First time → creates user + SSH identity + mock OAuth account
+     - Returning  → checks token validity, re-auths if expired
+        ↓
+7. "Welcome to swiggy.dev!" shown in terminal
+```
+
+---
+
+## What Is Not Yet Implemented
+
+| Missing piece | Where to add it |
+|---------------|----------------|
+| Swiggy OAuth login redirect | `internal/httpserver/handlers.go:handleLoginGet` |
+| Swiggy OAuth callback handler | New route `GET /login/callback` in `internal/httpserver/server.go` |
+| Real Swiggy token exchange | `internal/provider/swiggy/client.go` — implement `Client` interface |
+| Real token refresh on re-auth | `internal/auth/service.go:refreshMockAccount` |
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SSH_ADDR` | `:2222` | SSH server listen address |
+| `HTTP_ADDR` | `:8080` | HTTP server listen address |
+| `SSH_HOST_KEY_PATH` | `.local/ssh_host_ed25519_key` | Path to host key file |
+| `TOKEN_ENCRYPTION_KEY` | hardcoded dev key | AES-256 key (base64url, 32 bytes) — **must be set in production** |
+| `DATABASE_URL` | `postgres://...localhost` | Postgres connection string |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection string |
+| `PUBLIC_BASE_URL` | `http://localhost:8080` | Base URL shown to users in login prompt |
+| `LOGIN_CODE_TTL` | `10m` | How long a login code is valid |
+| `SWIGGY_PROVIDER` | `mock` | Set to `swiggy` when real integration is ready |
+| `APP_ENV` | `local` | Environment name (`local`, `production`, etc.) |
+
+---
+
+## Common Mistakes
+
+| Mistake | Fix |
+|---------|-----|
+| Multiple servers show different host key fingerprints | Share host key via secrets manager — all instances must use the same key |
+| `TOKEN_ENCRYPTION_KEY` not set in production | Set to a securely generated 32-byte base64url key — the dev default is public |
+| Login code accepted without Swiggy login | Swiggy OAuth is not yet integrated — `/login` currently accepts any code submission |
+| User sees "fingerprint changed" warning | Old host key on disk differs from new one — delete `.local/ssh_host_ed25519_key` or restore the correct key |
+| Token expired but re-auth not triggered | Check `ValidateTokenForUse` — token status must be `expired` or `reconnect_required` to trigger re-auth |
