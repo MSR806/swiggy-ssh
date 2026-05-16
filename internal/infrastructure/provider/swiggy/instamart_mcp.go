@@ -15,6 +15,8 @@ import (
 
 const mcpJSONRPCVersion = "2.0"
 
+const maxMCPResponseBytes = 4 << 20
+
 var errMCPRequestAuthorizerRequired = errors.New("instamart mcp request authorizer is required")
 
 var longDigitSequence = regexp.MustCompile(`\d{6,}`)
@@ -142,12 +144,16 @@ func (c *MCPInstamartClient) callToolEnvelopeHTTP(ctx context.Context, name stri
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return instamartToolEnvelope{}, fmt.Errorf("instamart mcp %s failed: http status %d", name, resp.StatusCode)
+	}
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxMCPResponseBytes+1))
 	if err != nil {
 		return instamartToolEnvelope{}, fmt.Errorf("read instamart mcp %s response: %w", name, err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return instamartToolEnvelope{}, fmt.Errorf("instamart mcp %s failed: http status %d", name, resp.StatusCode)
+	if len(respBody) > maxMCPResponseBytes {
+		return instamartToolEnvelope{}, fmt.Errorf("instamart mcp %s failed: response body exceeds %d bytes", name, maxMCPResponseBytes)
 	}
 
 	envelope, err := unwrapInstamartToolEnvelope(name, respBody)
@@ -234,8 +240,9 @@ func safeUpstreamMessage(message, fallback string) string {
 		}
 	}
 	message = longDigitSequence.ReplaceAllString(message, "[redacted]")
-	if len(message) > 160 {
-		message = message[:160]
+	runes := []rune(message)
+	if len(runes) > 160 {
+		message = string(runes[:160])
 	}
 	return message
 }

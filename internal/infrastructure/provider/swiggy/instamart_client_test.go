@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	domaininstamart "swiggy-ssh/internal/domain/instamart"
 )
@@ -325,6 +326,36 @@ func TestMCPClientMapsMCPAndToolErrorsSafely(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.contains, err)
 			}
 		})
+	}
+}
+
+func TestMCPClientRejectsOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = decodeRequest(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"success":true,"data":"`))
+		_, _ = w.Write([]byte(strings.Repeat("x", maxMCPResponseBytes+1)))
+		_, _ = w.Write([]byte(`"}}`))
+	}))
+	defer server.Close()
+
+	client := NewMCPInstamartClient(server.URL, server.Client(), fakeAuthorizer{})
+	_, err := client.GetCart(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "response body exceeds") {
+		t.Fatalf("expected oversized response error, got %v", err)
+	}
+}
+
+func TestSafeUpstreamMessageTruncatesUTF8ByRune(t *testing.T) {
+	message := strings.Repeat("界", 200)
+
+	got := safeUpstreamMessage(message, "fallback")
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid UTF-8 after truncation, got %q", got)
+	}
+	if len([]rune(got)) != 160 {
+		t.Fatalf("expected 160 runes, got %d", len([]rune(got)))
 	}
 }
 

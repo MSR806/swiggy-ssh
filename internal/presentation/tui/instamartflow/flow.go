@@ -171,8 +171,9 @@ type instamartOrdersMsg struct {
 }
 
 type instamartTrackingMsg struct {
-	status domaininstamart.TrackingStatus
-	err    error
+	status  domaininstamart.TrackingStatus
+	history domaininstamart.OrderHistory
+	err     error
 }
 
 func (m instamartModel) Init() tea.Cmd {
@@ -248,6 +249,10 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case instamartTrackingMsg:
 		if msg.err != nil {
+			if len(msg.history.Orders) > 0 {
+				m.orders = msg.history
+				m.cursor = 0
+			}
 			m.screen = instamartScreenOrders
 			m.err = displayErr("Tracking unavailable", msg.err)
 			return m, nil
@@ -684,7 +689,7 @@ func (m instamartModel) loadOrdersCmd(activeOnly bool) tea.Cmd {
 			return instamartOrdersMsg{history: history, err: nil}
 		}
 		status, trackErr := m.service.TrackOrder(m.ctx, appinstamart.TrackOrderInput{OrderID: order.OrderID, Location: order.Location})
-		return instamartTrackingMsg{status: status, err: trackErr}
+		return instamartTrackingMsg{status: status, history: history, err: trackErr}
 	}
 }
 
@@ -840,10 +845,7 @@ func defaultString(value, fallback string) string {
 	return value
 }
 
-func redactLine(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "address hidden"
-	}
+func redactLine(_ string) string {
 	return "address hidden"
 }
 

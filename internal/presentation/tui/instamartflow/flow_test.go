@@ -291,6 +291,36 @@ func TestInstamartOrderHistoryEnterTracksSelectedOrder(t *testing.T) {
 	}
 }
 
+func TestInstamartActiveOrderTrackingFailureKeepsOrders(t *testing.T) {
+	location := &domaininstamart.Location{Lat: 12.9, Lng: 77.6}
+	fake := &fakeInstamartService{
+		orders:   domaininstamart.OrderHistory{Orders: []domaininstamart.OrderSummary{{OrderID: "order-1", Status: "CONFIRMED", Active: true, Location: location}}},
+		trackErr: errWithSensitiveText("tracking failed for order 123456789"),
+	}
+	m := instamartModel{ctx: context.Background(), service: fake}
+
+	msg := m.loadOrdersCmd(true)()
+	trackingMsg, ok := msg.(instamartTrackingMsg)
+	if !ok {
+		t.Fatalf("expected tracking message, got %T", msg)
+	}
+	updated, _ := m.Update(trackingMsg)
+	got := updated.(instamartModel)
+
+	if got.screen != instamartScreenOrders {
+		t.Fatalf("expected orders screen after tracking failure, got %v", got.screen)
+	}
+	if len(got.orders.Orders) != 1 {
+		t.Fatalf("expected fetched orders to be preserved, got %#v", got.orders)
+	}
+	if !strings.Contains(got.err, "Tracking unavailable") {
+		t.Fatalf("expected tracking error, got %q", got.err)
+	}
+	if strings.Contains(got.View(), "No matching orders found") {
+		t.Fatal("tracking failure should not render an empty orders state when orders were fetched")
+	}
+}
+
 func TestInstamartCancellationGuidanceDoesNotCallService(t *testing.T) {
 	fake := &fakeInstamartService{}
 	m := instamartModel{ctx: context.Background(), service: fake, screen: instamartScreenHome}
@@ -393,6 +423,7 @@ type fakeInstamartService struct {
 	cart           domaininstamart.Cart
 	orders         domaininstamart.OrderHistory
 	tracking       domaininstamart.TrackingStatus
+	trackErr       error
 	checkoutResult domaininstamart.CheckoutResult
 	updateCalls    int
 	getCartCalls   int
@@ -437,7 +468,7 @@ func (f *fakeInstamartService) GetOrders(_ context.Context, input appinstamart.G
 
 func (f *fakeInstamartService) TrackOrder(context.Context, appinstamart.TrackOrderInput) (domaininstamart.TrackingStatus, error) {
 	f.trackCalls++
-	return f.tracking, nil
+	return f.tracking, f.trackErr
 }
 
 func (f *fakeInstamartService) anyCalls() bool {
