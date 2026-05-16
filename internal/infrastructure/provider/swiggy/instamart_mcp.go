@@ -130,7 +130,7 @@ func (c *MCPInstamartClient) callToolEnvelopeHTTP(ctx context.Context, name stri
 		return instamartToolEnvelope{}, fmt.Errorf("build instamart mcp %s http request: %w", name, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 
 	if err := c.authorizer.AuthorizeMCPRequest(ctx, req); err != nil {
 		return instamartToolEnvelope{}, fmt.Errorf("authorize instamart mcp %s request: %w", name, err)

@@ -1,11 +1,14 @@
 package instamartflow
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	appinstamart "swiggy-ssh/internal/application/instamart"
+	domainauth "swiggy-ssh/internal/domain/auth"
 	domaininstamart "swiggy-ssh/internal/domain/instamart"
 )
 
@@ -35,6 +38,21 @@ func TestInstamartSearchUsesSelectedAddress(t *testing.T) {
 	}
 	if fake.searchInput.AddressID != "addr-1" || fake.searchInput.Query != "milk" {
 		t.Fatalf("unexpected search input: %+v", fake.searchInput)
+	}
+}
+
+func TestInstamartAppViewPassesUserContextToAddressLoad(t *testing.T) {
+	fake := &fakeInstamartService{}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	var buf bytes.Buffer
+	err := InstamartAppView{Service: fake, UserID: "user-1", In: strings.NewReader("q")}.Render(ctx, &buf)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if fake.addressUserID != "user-1" {
+		t.Fatalf("expected address load user context %q, got %q", "user-1", fake.addressUserID)
 	}
 }
 
@@ -371,6 +389,7 @@ type fakeInstamartService struct {
 	searchInput    appinstamart.SearchProductsInput
 	updateInput    appinstamart.UpdateCartInput
 	checkoutInput  appinstamart.CheckoutInput
+	addressUserID  string
 	cart           domaininstamart.Cart
 	orders         domaininstamart.OrderHistory
 	tracking       domaininstamart.TrackingStatus
@@ -381,7 +400,8 @@ type fakeInstamartService struct {
 	trackCalls     int
 }
 
-func (f *fakeInstamartService) GetAddresses(context.Context) ([]domaininstamart.Address, error) {
+func (f *fakeInstamartService) GetAddresses(ctx context.Context) ([]domaininstamart.Address, error) {
+	f.addressUserID, _ = domainauth.UserIDFromContext(ctx)
 	return []domaininstamart.Address{{ID: "addr-1", Label: "Home", DisplayLine: "Test address", PhoneMasked: "****0001"}}, nil
 }
 

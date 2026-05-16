@@ -32,6 +32,9 @@ func TestMCPClientPostsJSONRPCToolCallToConfiguredEndpoint(t *testing.T) {
 		if r.Header.Get("Authorization") == "" {
 			t.Fatal("expected authorizer to decorate request")
 		}
+		if r.Header.Get("Accept") != "application/json, text/event-stream" {
+			t.Fatalf("expected MCP streamable accept header, got %q", r.Header.Get("Accept"))
+		}
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
