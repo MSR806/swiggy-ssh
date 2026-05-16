@@ -14,6 +14,7 @@ import (
 
 	"swiggy-ssh/internal/application/auth"
 	"swiggy-ssh/internal/application/identity"
+	appinstamart "swiggy-ssh/internal/application/instamart"
 	"swiggy-ssh/internal/presentation/tui"
 
 	"golang.org/x/crypto/ssh"
@@ -36,6 +37,7 @@ type SSHServer struct {
 	authAttemptSvc auth.BrowserAuthAttemptService
 	publicBaseURL  string
 	authUseCase    *auth.EnsureValidAccountUseCase
+	instamartSvc   *appinstamart.Service
 }
 
 type activeConnTracker struct {
@@ -79,7 +81,7 @@ func (t *activeConnTracker) closeAll() {
 	}
 }
 
-func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.ResolveSSHIdentityUseCase, registrar *identity.RegisterSSHIdentityUseCase, startSession *identity.StartTerminalSessionUseCase, endSession *identity.EndTerminalSessionUseCase, authAttemptSvc auth.BrowserAuthAttemptService, publicBaseURL string, authUseCase *auth.EnsureValidAccountUseCase) *SSHServer {
+func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.ResolveSSHIdentityUseCase, registrar *identity.RegisterSSHIdentityUseCase, startSession *identity.StartTerminalSessionUseCase, endSession *identity.EndTerminalSessionUseCase, authAttemptSvc auth.BrowserAuthAttemptService, publicBaseURL string, authUseCase *auth.EnsureValidAccountUseCase, instamartSvc *appinstamart.Service) *SSHServer {
 	return &SSHServer{
 		addr:           addr,
 		hostKeyPath:    hostKeyPath,
@@ -91,6 +93,7 @@ func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.Resol
 		authAttemptSvc: authAttemptSvc,
 		publicBaseURL:  publicBaseURL,
 		authUseCase:    authUseCase,
+		instamartSvc:   instamartSvc,
 	}
 }
 
@@ -429,7 +432,7 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 			AllowFirstAuth: false,
 		})
 		if fastErr == nil {
-			render(ctx, tui.InstamartPlaceholderView{UserID: resolvedUserID, In: ch})
+			render(ctx, tui.InstamartAppView{Service: s.instamartSvc, UserID: resolvedUserID, In: ch})
 			return
 		}
 		if errors.Is(fastErr, auth.ErrAccountRevoked) {
@@ -482,7 +485,7 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 		return
 	}
 	if s.authUseCase == nil {
-		render(ctx, tui.LoginSuccessView{})
+		render(ctx, tui.LoginSuccessView{In: ch})
 		return
 	}
 
@@ -518,8 +521,9 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 			IsFirstAuth: result.IsFirstAuth,
 			WasReauth:   result.WasReauth,
 			Account:     result.Account,
+			In:          ch,
 		})
-		render(ctx, tui.InstamartPlaceholderView{UserID: resolvedUserID, In: ch})
+		render(ctx, tui.InstamartAppView{Service: s.instamartSvc, UserID: resolvedUserID, In: ch})
 	}
 }
 

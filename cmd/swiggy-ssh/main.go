@@ -3,16 +3,20 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"net/http"
 	"os/signal"
 	"strings"
 	"syscall"
 
 	"swiggy-ssh/internal/application/auth"
 	"swiggy-ssh/internal/application/identity"
+	appinstamart "swiggy-ssh/internal/application/instamart"
+	domaininstamart "swiggy-ssh/internal/domain/instamart"
 	cache "swiggy-ssh/internal/infrastructure/cache/redis"
 	"swiggy-ssh/internal/infrastructure/crypto"
 	store "swiggy-ssh/internal/infrastructure/persistence/postgres"
-	"swiggy-ssh/internal/infrastructure/provider/swiggy"
+	mockprovider "swiggy-ssh/internal/infrastructure/provider/mock"
+	swiggyprovider "swiggy-ssh/internal/infrastructure/provider/swiggy"
 	"swiggy-ssh/internal/platform/config"
 	"swiggy-ssh/internal/platform/logging"
 	httpserver "swiggy-ssh/internal/presentation/http"
@@ -63,7 +67,7 @@ func main() {
 	authAttemptSvc := cache.NewRedisLoginCodeService(redisClient, cfg.LoginCodeTTL)
 	logger.InfoContext(ctx, "browser auth attempt service ready", "ttl", cfg.LoginCodeTTL)
 
-	swiggyBrowserAuth := swiggy.NewBrowserAuthClient(swiggy.BrowserAuthConfig{
+	swiggyBrowserAuth := swiggyprovider.NewBrowserAuthClient(swiggyprovider.BrowserAuthConfig{
 		AuthorizeURL: cfg.SwiggyAuthAuthorizeURL,
 		TokenURL:     cfg.SwiggyAuthTokenURL,
 		ClientID:     cfg.SwiggyClientID,
@@ -73,16 +77,30 @@ func main() {
 	completeBrowserAuth := auth.NewCompleteBrowserAuthUseCase(postgresStore, authAttemptSvc, swiggyBrowserAuth)
 	startBrowserAuth := auth.NewStartBrowserAuthUseCase(authAttemptSvc, swiggyBrowserAuth)
 
+	var instamartProvider domaininstamart.Provider
+	switch cfg.SwiggyProvider {
+	case "mock":
+		instamartProvider = mockprovider.NewInstamartProvider()
+	case "mcp", "swiggy":
+		authorizer := swiggyprovider.NewOAuthAccountAuthorizer(postgresStore)
+		instamartProvider = swiggyprovider.NewMCPInstamartClient(cfg.SwiggyMCPIMEndpoint, http.DefaultClient, authorizer)
+	default:
+		logger.ErrorContext(ctx, "invalid SWIGGY_PROVIDER; accepted values are mock, mcp, swiggy", "provider", cfg.SwiggyProvider)
+		return
+	}
+	instamartService := appinstamart.NewService(instamartProvider)
+
 	resolveSSHIdentity := identity.NewResolveSSHIdentityUseCase(postgresStore)
 	registerSSHIdentity := identity.NewRegisterSSHIdentityUseCase(postgresStore)
 	startTerminalSession := identity.NewStartTerminalSessionUseCase(postgresStore)
 	endTerminalSession := identity.NewEndTerminalSessionUseCase(postgresStore)
-	server := sshserver.New(cfg.SSHAddr, cfg.SSHHostKeyPath, logger, resolveSSHIdentity, registerSSHIdentity, startTerminalSession, endTerminalSession, authAttemptSvc, cfg.PublicBaseURL, ensureValidAccount)
+	server := sshserver.New(cfg.SSHAddr, cfg.SSHHostKeyPath, logger, resolveSSHIdentity, registerSSHIdentity, startTerminalSession, endTerminalSession, authAttemptSvc, cfg.PublicBaseURL, ensureValidAccount, instamartService)
 	httpSrv := httpserver.New(cfg.HTTPAddr, logger, authAttemptSvc, completeBrowserAuth, startBrowserAuth, cfg.PublicBaseURL, cfg.SwiggyProvider)
 
 	logger.InfoContext(ctx, "swiggy-ssh scaffold startup",
 		"app_env", cfg.AppEnv,
 		"provider", cfg.SwiggyProvider,
+		"swiggy_mcp_im_endpoint", cfg.SwiggyMCPIMEndpoint,
 		"ssh_addr", cfg.SSHAddr,
 		"ssh_host_key_path", cfg.SSHHostKeyPath,
 		"http_addr", cfg.HTTPAddr,
