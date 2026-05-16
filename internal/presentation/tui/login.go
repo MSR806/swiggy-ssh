@@ -117,9 +117,7 @@ type LoginSuccessView struct {
 }
 
 var loginSuccessChoices = []string{
-	"Instamart",
-	"Home",
-	"Account settings",
+	"Continue to Instamart",
 }
 
 type loginSuccessModel struct {
@@ -181,9 +179,7 @@ func (m loginSuccessModel) View() string {
 	sb.WriteString(line(""))
 	sb.WriteString(divider())
 	sb.WriteString(footerLine(
-		KeyHint{Key: "j/k", Label: "move"},
-		KeyHint{Key: "enter", Label: "select"},
-		KeyHint{Key: "b", Label: "back"},
+		KeyHint{Key: "enter", Label: "continue"},
 		KeyHint{Key: "q", Label: "quit"},
 	))
 	sb.WriteString(bottom())

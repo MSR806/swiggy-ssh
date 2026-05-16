@@ -73,17 +73,19 @@ func (m instamartModel) footer() string {
 	case instamartScreenAddressSelect:
 		return footerLine(KeyHint{Key: "j/k", Label: "move"}, KeyHint{Key: "1-9", Label: "select"}, KeyHint{Key: "q", Label: "quit"})
 	case instamartScreenHome, instamartScreenStatic:
-		return footerLine(KeyHint{Key: "/", Label: "search"}, KeyHint{Key: "c", Label: "cart"}, KeyHint{Key: "a", Label: "address"}, KeyHint{Key: "q", Label: "quit"})
+		return footerLine(KeyHint{Key: "j/k", Label: "move"}, KeyHint{Key: "1-7", Label: "select"}, KeyHint{Key: "/", Label: "search"}, KeyHint{Key: "c", Label: "cart"}, KeyHint{Key: "q", Label: "quit"})
 	case instamartScreenSearchInput:
 		return footerLine(KeyHint{Key: "enter", Label: "search"}, KeyHint{Key: "esc", Label: "home"}, KeyHint{Key: "q", Label: "quit"})
 	case instamartScreenProductList:
-		return footerLine(KeyHint{Key: "j/k", Label: "move"}, KeyHint{Key: "enter", Label: "choose"}, KeyHint{Key: "esc", Label: "home"})
+		return footerLine(KeyHint{Key: "j/k", Label: "move"}, KeyHint{Key: "1-9", Label: "choose"}, KeyHint{Key: "enter", Label: "choose"}, KeyHint{Key: "esc", Label: "home"})
 	case instamartScreenQuantity:
 		return footerLine(KeyHint{Key: "+/-", Label: "quantity"}, KeyHint{Key: "enter", Label: "update cart"}, KeyHint{Key: "esc", Label: "home"})
 	case instamartScreenCartReview:
 		return footerLine(KeyHint{Key: "p/enter", Label: "checkout"}, KeyHint{Key: "/", Label: "add item"}, KeyHint{Key: "b", Label: "home"})
 	case instamartScreenCheckoutConfirm:
 		return footerLine(KeyHint{Key: "y/enter", Label: "confirm"}, KeyHint{Key: "n", Label: "cancel"})
+	case instamartScreenOrders:
+		return footerLine(KeyHint{Key: "j/k", Label: "move"}, KeyHint{Key: "enter", Label: "track"}, KeyHint{Key: "b", Label: "home"})
 	default:
 		return footerLine(KeyHint{Key: "enter", Label: "home"}, KeyHint{Key: "q", Label: "quit"})
 	}

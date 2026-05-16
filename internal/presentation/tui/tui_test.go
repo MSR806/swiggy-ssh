@@ -198,7 +198,7 @@ func TestLoginSuccessViewShowsSignedInAs(t *testing.T) {
 		"Alice",
 		"alice@example.com",
 		"Instamart",
-		"j/k move",
+		"enter continue",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in LoginSuccessView output", want)

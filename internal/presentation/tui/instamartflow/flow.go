@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	appinstamart "swiggy-ssh/internal/application/instamart"
+	domainauth "swiggy-ssh/internal/domain/auth"
 	domaininstamart "swiggy-ssh/internal/domain/instamart"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -288,7 +289,9 @@ func (m instamartModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCartReviewKey(key)
 	case instamartScreenCheckoutConfirm:
 		return m.handleCheckoutConfirmKey(key)
-	case instamartScreenOrderResult, instamartScreenOrders, instamartScreenTracking, instamartScreenMessage:
+	case instamartScreenOrders:
+		return m.handleOrdersKey(key)
+	case instamartScreenOrderResult, instamartScreenTracking, instamartScreenMessage:
 		if key == "enter" || key == "b" || key == "h" {
 			m.screen = instamartScreenHome
 			m.err = ""
@@ -360,7 +363,7 @@ func (m instamartModel) handleHomeKey(key string) (tea.Model, tea.Cmd) {
 	case "/":
 		return m.startSearch(), nil
 	case "c":
-		return m.loadCart("Loading cart...")
+		return m.runHomeAction("cart")
 	case "a":
 		m.screen = instamartScreenAddressSelect
 		m.cursor = 0
@@ -482,6 +485,10 @@ func (m instamartModel) selectProductRow(idx int) (tea.Model, tea.Cmd) {
 		m.err = "That product variation cannot be added from the terminal."
 		return m, nil
 	}
+	if !row.Product.InStock || !row.Product.Available || !row.Variation.InStock {
+		m.err = "That product variation is currently unavailable."
+		return m, nil
+	}
 	m.selectedRow = &row
 	m.quantity = existingQuantity(m.intendedItems, row.Variation.SpinID)
 	if m.quantity <= 0 {
@@ -560,6 +567,38 @@ func (m instamartModel) handleCheckoutConfirmKey(key string) (tea.Model, tea.Cmd
 	case "n", "b", "esc":
 		m.screen = instamartScreenCartReview
 		m.status = "Checkout cancelled."
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m instamartModel) handleOrdersKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "down", "j":
+		if m.cursor < len(m.orders.Orders)-1 {
+			m.cursor++
+		}
+	case "enter":
+		if m.cursor < 0 || m.cursor >= len(m.orders.Orders) {
+			m.err = "Choose an order to track."
+			return m, nil
+		}
+		order := m.orders.Orders[m.cursor]
+		if order.Location == nil {
+			m.tracking = domaininstamart.TrackingStatus{}
+			m.screen = instamartScreenTracking
+			m.err = ""
+			return m, nil
+		}
+		m.screen = instamartScreenLoading
+		m.loading = "Tracking selected order..."
+		return m, m.trackOrderCmd(order)
+	case "b", "h":
+		m.screen = instamartScreenHome
 		return m, nil
 	}
 	return m, nil
@@ -649,6 +688,16 @@ func (m instamartModel) loadOrdersCmd(activeOnly bool) tea.Cmd {
 	}
 }
 
+func (m instamartModel) trackOrderCmd(order domaininstamart.OrderSummary) tea.Cmd {
+	return func() tea.Msg {
+		if order.Location == nil {
+			return instamartTrackingMsg{}
+		}
+		status, err := m.service.TrackOrder(m.ctx, appinstamart.TrackOrderInput{OrderID: order.OrderID, Location: order.Location})
+		return instamartTrackingMsg{status: status, err: err}
+	}
+}
+
 func (v InstamartView) Render(ctx context.Context, w io.Writer) error {
 	in := v.In
 	if in == nil {
@@ -669,6 +718,7 @@ func (v InstamartView) Render(ctx context.Context, w io.Writer) error {
 }
 
 func (v InstamartAppView) Render(ctx context.Context, w io.Writer) error {
+	ctx = domainauth.ContextWithUserID(ctx, v.UserID)
 	in := v.In
 	if in == nil {
 		in = strings.NewReader("")

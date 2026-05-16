@@ -60,6 +60,28 @@ func TestInstamartProductRowsRenderVariationsAndSponsored(t *testing.T) {
 	}
 }
 
+func TestInstamartUnavailableVariationCannotBeSelected(t *testing.T) {
+	m := instamartModel{
+		screen: instamartScreenProductList,
+		rows: []productVariationRow{{
+			Product:   domaininstamart.Product{DisplayName: "Bread", InStock: true, Available: false},
+			Variation: domaininstamart.ProductVariation{SpinID: "spin-bread", DisplayName: "Bread", InStock: true},
+		}},
+	}
+
+	updated, cmd := m.handleProductKey("1")
+	if cmd != nil {
+		t.Fatal("unavailable row should not start cart update")
+	}
+	got := updated.(instamartModel)
+	if got.screen != instamartScreenProductList {
+		t.Fatalf("expected to stay on product list, got %v", got.screen)
+	}
+	if !strings.Contains(got.err, "currently unavailable") {
+		t.Fatalf("expected unavailable message, got %q", got.err)
+	}
+}
+
 func TestInstamartCartUpdatesOnlyAfterVariationAndQuantity(t *testing.T) {
 	fake := &fakeInstamartService{cart: cartWithItems([]domaininstamart.CartItem{{SpinID: "spin-milk", Name: "Milk 1 L", Quantity: 2, FinalPrice: 120}})}
 	address := domaininstamart.Address{ID: "addr-1", Label: "Home"}
@@ -231,6 +253,26 @@ func TestInstamartTrackingWithoutLocationUsesSafeMessage(t *testing.T) {
 	}
 }
 
+func TestInstamartOrderHistoryEnterTracksSelectedOrder(t *testing.T) {
+	location := &domaininstamart.Location{Lat: 12.9, Lng: 77.6}
+	fake := &fakeInstamartService{tracking: domaininstamart.TrackingStatus{StatusMessage: "Order is getting packed", ETAText: "5 mins"}}
+	m := instamartModel{
+		ctx:     context.Background(),
+		service: fake,
+		screen:  instamartScreenOrders,
+		orders:  domaininstamart.OrderHistory{Orders: []domaininstamart.OrderSummary{{OrderID: "order-1", Status: "CONFIRMED", Active: true, Location: location}}},
+	}
+
+	_, cmd := m.handleOrdersKey("enter")
+	if cmd == nil {
+		t.Fatal("expected tracking command")
+	}
+	_ = cmd()
+	if fake.trackCalls != 1 {
+		t.Fatalf("expected tracking call, got %d", fake.trackCalls)
+	}
+}
+
 func TestInstamartCancellationGuidanceDoesNotCallService(t *testing.T) {
 	fake := &fakeInstamartService{}
 	m := instamartModel{ctx: context.Background(), service: fake, screen: instamartScreenHome}
@@ -253,7 +295,7 @@ func TestInstamartCancellationGuidanceDoesNotCallService(t *testing.T) {
 func TestInstamartViewCartRequiresSelectedAddress(t *testing.T) {
 	fake := &fakeInstamartService{cart: cartWithItems(nil)}
 	m := instamartModel{ctx: context.Background(), service: fake, screen: instamartScreenHome}
-	updated, cmd := m.runHomeAction("cart")
+	updated, cmd := m.handleHomeKey("c")
 	if cmd != nil {
 		t.Fatal("cart should not load before address selection")
 	}
@@ -331,6 +373,7 @@ type fakeInstamartService struct {
 	checkoutInput  appinstamart.CheckoutInput
 	cart           domaininstamart.Cart
 	orders         domaininstamart.OrderHistory
+	tracking       domaininstamart.TrackingStatus
 	checkoutResult domaininstamart.CheckoutResult
 	updateCalls    int
 	getCartCalls   int
@@ -374,7 +417,7 @@ func (f *fakeInstamartService) GetOrders(_ context.Context, input appinstamart.G
 
 func (f *fakeInstamartService) TrackOrder(context.Context, appinstamart.TrackOrderInput) (domaininstamart.TrackingStatus, error) {
 	f.trackCalls++
-	return domaininstamart.TrackingStatus{}, nil
+	return f.tracking, nil
 }
 
 func (f *fakeInstamartService) anyCalls() bool {
