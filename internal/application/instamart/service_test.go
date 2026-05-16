@@ -194,16 +194,19 @@ func TestUpdateCartPassesFullReplacementList(t *testing.T) {
 	}
 }
 
-func TestUpdateCartRejectsEmptyList(t *testing.T) {
+func TestUpdateCartAllowsEmptyReplacementList(t *testing.T) {
 	provider := &fakeProvider{}
 	service := NewService(provider)
 
 	_, err := service.UpdateCart(context.Background(), UpdateCartInput{SelectedAddressID: "address-1"})
-	if !errors.Is(err, ErrCartEmpty) {
-		t.Fatalf("expected ErrCartEmpty, got %v", err)
+	if err != nil {
+		t.Fatalf("update empty replacement list: %v", err)
 	}
-	if provider.updateCalled {
-		t.Fatal("provider must not be called with empty replacement list")
+	if !provider.updateCalled {
+		t.Fatal("provider should receive empty replacement list")
+	}
+	if len(provider.updateItems) != 0 {
+		t.Fatalf("expected empty replacement list, got %#v", provider.updateItems)
 	}
 }
 

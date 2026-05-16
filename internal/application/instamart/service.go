@@ -119,9 +119,6 @@ func (s *Service) UpdateCart(ctx context.Context, input UpdateCartInput) (domain
 	if addressID == "" {
 		return domaininstamart.Cart{}, domaininstamart.ErrAddressRequired
 	}
-	if len(input.Items) == 0 {
-		return domaininstamart.Cart{}, domaininstamart.ErrCartEmpty
-	}
 	for _, item := range input.Items {
 		if strings.TrimSpace(item.SpinID) == "" {
 			return domaininstamart.Cart{}, domaininstamart.ErrVariantRequired

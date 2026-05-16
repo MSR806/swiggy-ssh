@@ -277,7 +277,7 @@ func TestInstamartViewRendersAddress(t *testing.T) {
 
 	for _, want := range []string{
 		"Work",
-		"Koramangala",
+		"address hidden",
 		"3 items",
 		"Search products",
 		"/ search",

@@ -231,18 +231,16 @@ func (s *SSHServer) handleConn(ctx context.Context, netConn net.Conn, serverConf
 
 	var terminalSessionID string
 	if s.startSession != nil {
-		selectedAddressID := identity.SelectedAddressIDUnsetPlaceholder
 		var sshFingerprint *string
 		if fingerprint != "" {
 			sshFingerprint = &fingerprint
 		}
 		trackedSession, trackErr := s.startSession.Execute(ctx, identity.StartTerminalSessionInput{
-			Client:            identity.ClientProtocolSSH,
-			ClientSessionID:   fmt.Sprintf("%x", sshConn.SessionID()),
-			SSHFingerprint:    sshFingerprint,
-			CurrentScreen:     identity.ScreenSSHSessionPlaceholder,
-			SelectedAddressID: &selectedAddressID,
-			ResolvedIdentity:  resolvedIdentity,
+			Client:           identity.ClientProtocolSSH,
+			ClientSessionID:  fmt.Sprintf("%x", sshConn.SessionID()),
+			SSHFingerprint:   sshFingerprint,
+			CurrentScreen:    identity.ScreenSSHSessionPlaceholder,
+			ResolvedIdentity: resolvedIdentity,
 		})
 		if trackErr != nil {
 			s.logger.WarnContext(ctx, "terminal session track start failed",
