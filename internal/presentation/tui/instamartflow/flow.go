@@ -273,6 +273,9 @@ func (m instamartModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleStaticKey(key)
 	}
 	if key == "esc" {
+		if m.screen == instamartScreenCheckoutConfirm {
+			return m.handleCheckoutConfirmKey(key)
+		}
 		m.screen = instamartScreenHome
 		m.err = ""
 		m.status = ""

@@ -10,6 +10,8 @@ import (
 	appinstamart "swiggy-ssh/internal/application/instamart"
 	domainauth "swiggy-ssh/internal/domain/auth"
 	domaininstamart "swiggy-ssh/internal/domain/instamart"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestInstamartAddressSelectionRequiredBeforeSearch(t *testing.T) {
@@ -247,6 +249,22 @@ func TestInstamartCheckoutBlocksStaleCartAddress(t *testing.T) {
 	}
 	if !strings.Contains(updated.(instamartModel).err, "Cart address no longer matches") {
 		t.Fatalf("expected stale address error, got %q", updated.(instamartModel).err)
+	}
+}
+
+func TestInstamartCheckoutConfirmEscReturnsToCartReview(t *testing.T) {
+	m := checkoutConfirmModel(&fakeInstamartService{})
+
+	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		t.Fatal("esc should not trigger a command")
+	}
+	got := updated.(instamartModel)
+	if got.screen != instamartScreenCartReview {
+		t.Fatalf("expected cart review screen, got %v", got.screen)
+	}
+	if got.status != "Checkout cancelled." {
+		t.Fatalf("expected checkout cancelled status, got %q", got.status)
 	}
 }
 
