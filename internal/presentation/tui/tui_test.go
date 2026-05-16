@@ -86,8 +86,8 @@ func TestInstamartPlaceholderViewUsesInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if !strings.Contains(buf.String(), "Instamart") {
-		t.Fatal("expected Instamart screen output")
+	if !strings.Contains(buf.String(), "env=instamart") {
+		t.Fatal("expected Instamart flow output")
 	}
 }
 
@@ -277,8 +277,7 @@ func TestInstamartViewRendersAddress(t *testing.T) {
 
 	for _, want := range []string{
 		"Work",
-		"address hidden",
-		"3 items",
+		"cart=3",
 		"grep products",
 		"/ grep",
 	} {
@@ -299,7 +298,7 @@ func TestInstamartPlaceholderViewDelegates(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		"Instamart",
+		"env=instamart",
 		"grep products",
 		"Home", // default address label
 		"Guest session connected",

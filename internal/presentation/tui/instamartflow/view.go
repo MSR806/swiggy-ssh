@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const bodyRows = 12
+const bodyRows = 17
 
 func (m instamartModel) View() string {
 	if m.viewport.Width > 0 && (m.viewport.Width < 80 || m.viewport.Height < 24) {
@@ -15,21 +15,8 @@ func (m instamartModel) View() string {
 
 	var sb strings.Builder
 	sb.WriteString(top())
-	sb.WriteString(headerLine(" "+brandStyle.Render("swiggy.ssh")+creamStyle.Render(" > Instamart"), m.headerRight()))
-	sb.WriteString(line(" " + mutedStyle.Render(m.sessionStatus())))
+	sb.WriteString(headerLine(" "+mutedStyle.Render(m.sessionStatus()), m.headerRight()))
 	sb.WriteString(divider())
-	sb.WriteString(line(" " + brandStyle.Render("Instamart") + creamStyle.Render(" — groceries and daily essentials in minutes.")))
-	if m.status != "" {
-		sb.WriteString(line(" " + successStyle.Render("✓ "+m.status)))
-	} else {
-		sb.WriteString(line(""))
-	}
-	if m.err != "" {
-		sb.WriteString(line(" " + errorStyle.Render(m.err)))
-	} else {
-		sb.WriteString(line(""))
-	}
-	sb.WriteString(line(""))
 
 	var body strings.Builder
 	switch m.screen {
@@ -70,11 +57,21 @@ func (m instamartModel) View() string {
 	}
 
 	sb.WriteString(fixedBody(body.String(), bodyRows))
-	sb.WriteString(line(""))
+	sb.WriteString(m.bottomStatusLine())
 	sb.WriteString(divider())
 	sb.WriteString(m.footer())
 	sb.WriteString(bottom())
 	return centerInViewport(sb.String(), m.viewport)
+}
+
+func (m instamartModel) bottomStatusLine() string {
+	if m.err != "" {
+		return rightLine(errorStyle.Render(m.err))
+	}
+	if m.status != "" {
+		return rightLine(successStyle.Render("✓ " + m.status))
+	}
+	return line("")
 }
 
 func fixedBody(content string, rows int) string {
@@ -181,7 +178,7 @@ func (m instamartModel) footer() string {
 	case instamartScreenProductList:
 		return footerLine(KeyHint{Key: "j/k", Label: "move"}, KeyHint{Key: "1-9", Label: "choose"}, KeyHint{Key: "enter", Label: "choose"}, KeyHint{Key: "?", Label: "help"}, KeyHint{Key: "esc", Label: "home"})
 	case instamartScreenQuantity:
-		return footerLine(KeyHint{Key: "+/-", Label: "quantity"}, KeyHint{Key: "enter", Label: "stage"}, KeyHint{Key: "?", Label: "help"}, KeyHint{Key: "esc", Label: "home"})
+		return footerLine(KeyHint{Key: "+/-", Label: "quantity"}, KeyHint{Key: "enter", Label: "stage"}, KeyHint{Key: "b/esc", Label: "results"}, KeyHint{Key: "?", Label: "help"})
 	case instamartScreenCartReview:
 		hints := []KeyHint{{Key: "p/enter", Label: "deploy"}, {Key: "/", Label: "grep"}, {Key: "b", Label: "home"}}
 		if m.cartReviewOverflows() {

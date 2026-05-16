@@ -6,9 +6,6 @@ import (
 )
 
 func (m instamartModel) renderStatic(sb *strings.Builder) {
-	sb.WriteString(line(" " + brandStyle.Render("Address:") + " " + boldStyle.Render(defaultString(m.staticAddressLabel, "Home")) + creamStyle.Render(" — "+redactLine(m.staticAddressLine))))
-	sb.WriteString(line(" " + brandStyle.Render("Cart:") + " " + creamStyle.Render(fmt.Sprintf("%d items", m.staticCartCount))))
-	sb.WriteString(line(""))
 	for i, choice := range instamartHomeChoices[:5] {
 		label := fmt.Sprintf("%d. %s", i+1, choice.label)
 		if m.cursor == i {
@@ -39,11 +36,7 @@ func (m instamartModel) renderAddresses(sb *strings.Builder) {
 func (m instamartModel) renderHome(sb *strings.Builder) {
 	if m.selectedAddress == nil {
 		sb.WriteString(line(" Choose an address before searching or checkout."))
-	} else {
-		sb.WriteString(line(" " + brandStyle.Render("deploying to:") + " " + boldStyle.Render(addressLabel(*m.selectedAddress)) + creamStyle.Render(" — "+redactLine(m.selectedAddress.DisplayLine))))
 	}
-	sb.WriteString(line(" " + brandStyle.Render("Cart:") + " " + creamStyle.Render(fmt.Sprintf("%d items", len(m.intendedItems)))))
-	sb.WriteString(line(""))
 	for i, choice := range instamartHomeChoices {
 		label := fmt.Sprintf("%d. %s", i+1, choice.label)
 		if m.homeCursor == i {

@@ -391,6 +391,12 @@ func (m instamartModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.screen == instamartScreenCheckoutConfirm {
 			return m.handleCheckoutConfirmKey(key)
 		}
+		if m.screen == instamartScreenQuantity {
+			m.screen = instamartScreenProductList
+			m.err = ""
+			m.status = ""
+			return m, nil
+		}
 		m.screen = instamartScreenHome
 		m.err = ""
 		m.status = ""
@@ -468,7 +474,7 @@ func (m instamartModel) selectAddress(idx int) (tea.Model, tea.Cmd) {
 	m.selectedAddress = &m.addresses[idx]
 	m.screen = instamartScreenHome
 	m.homeCursor = 0
-	m.status = "target locked"
+	m.status = ""
 	m.err = ""
 	return m, nil
 }
@@ -687,6 +693,10 @@ func (m instamartModel) selectProductRow(idx int) (tea.Model, tea.Cmd) {
 
 func (m instamartModel) handleQuantityKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
+	case "b", "h":
+		m.screen = instamartScreenProductList
+		m.err = ""
+		m.status = ""
 	case "up", "k", "+", "=":
 		m.quantity++
 	case "down", "j", "-":

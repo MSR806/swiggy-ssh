@@ -31,6 +31,10 @@ var (
 	mutedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	boldStyle    = lipgloss.NewStyle().Bold(true)
 	cursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FC8019")).Bold(true)
+	yamlKeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FC8019"))
+	yamlValStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF7ED"))
+	diffAddStyle = lipgloss.NewStyle().Background(lipgloss.Color("#103D22"))
+	diffDelStyle = lipgloss.NewStyle().Background(lipgloss.Color("#4A1717"))
 )
 
 func init() {
@@ -74,6 +78,16 @@ func centeredLine(content string) string {
 	leftPad := (innerWidth - w) / 2
 	rightPad := innerWidth - w - leftPad
 	return "│" + strings.Repeat(" ", leftPad) + content + strings.Repeat(" ", rightPad) + "│\r\n"
+}
+
+func rightLine(content string) string {
+	w := lipgloss.Width(content)
+	if w > innerWidth {
+		runes := []rune(content)
+		content = string(runes[:innerWidth])
+		w = innerWidth
+	}
+	return "│" + strings.Repeat(" ", innerWidth-w) + content + "│\r\n"
 }
 
 func footerLine(hints ...KeyHint) string {

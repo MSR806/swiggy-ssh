@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	domaininstamart "swiggy-ssh/internal/domain/instamart"
 )
 
@@ -76,10 +78,16 @@ func diffLine(sign, body string) string {
 
 func diffText(sign, body string) string {
 	marker := successStyle.Render(sign)
+	rowStyle := diffAddStyle
 	if sign == "-" {
 		marker = errorStyle.Render(sign)
+		rowStyle = diffDelStyle
 	}
-	return " " + marker + " " + body
+	text := " " + marker + " " + body
+	if width := lipgloss.Width(text); width < innerWidth-1 {
+		text += strings.Repeat(" ", innerWidth-1-width)
+	}
+	return rowStyle.Render(text)
 }
 
 func billLineSign(bill domaininstamart.BillLine) string {

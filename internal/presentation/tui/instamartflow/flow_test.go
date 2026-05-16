@@ -116,7 +116,7 @@ func TestInstamartHomeUsesDeveloperCopyAndStatusBar(t *testing.T) {
 			t.Fatalf("expected %q in home output", want)
 		}
 	}
-	for _, old := range []string{"Search products", "Your go-to items", "View cart", "Track active order", "Order history", "Change address", "Delivering to"} {
+	for _, old := range []string{"Search products", "Your go-to items", "View cart", "Track active order", "Order history", "Change address", "Delivering to", "target locked", "deploying to:", "Cart:"} {
 		if strings.Contains(out, old) {
 			t.Fatalf("old copy %q should not be rendered", old)
 		}
@@ -253,16 +253,47 @@ func TestInstamartQuantityRendersSelectedItemManifest(t *testing.T) {
 		quantity: 2,
 	}
 	out := m.View()
-	for _, want := range []string{"stage item", "item: Milk", "pack: 1 L", "price: Rs 60", "status: available", "quantity:"} {
+	for _, want := range []string{"stage item", "item:", "Milk", "pack:", "1 L", "price:", "Rs 60", "status:", "available", "quantity:", "b/esc results"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in quantity output", want)
 		}
+	}
+	if !strings.Contains(out, "38;2;252;128;25") || !strings.Contains(out, "38;2;255;247;237") {
+		t.Fatalf("expected YAML key/value colors in quantity output, got %q", out)
 	}
 	if strings.Contains(out, "action: stage item") {
 		t.Fatalf("quantity output should not repeat the stage action, got %q", out)
 	}
 	if strings.Contains(out, "200") || strings.Contains(out, "409") {
 		t.Fatalf("quantity output should not render pseudo HTTP status codes: %q", out)
+	}
+}
+
+func TestInstamartQuantityBackReturnsToProductResults(t *testing.T) {
+	m := instamartModel{
+		screen: instamartScreenQuantity,
+		rows: []productVariationRow{{
+			Product:   domaininstamart.Product{DisplayName: "Milk", InStock: true, Available: true},
+			Variation: domaininstamart.ProductVariation{SpinID: "spin-milk", DisplayName: "Milk", InStock: true},
+		}},
+		cursor: 0,
+		selectedRow: &productVariationRow{
+			Product:   domaininstamart.Product{DisplayName: "Milk", InStock: true, Available: true},
+			Variation: domaininstamart.ProductVariation{SpinID: "spin-milk", DisplayName: "Milk", InStock: true},
+		},
+	}
+
+	updated, cmd := m.handleQuantityKey("b")
+	if cmd != nil {
+		t.Fatal("back to results should not call service")
+	}
+	if updated.(instamartModel).screen != instamartScreenProductList {
+		t.Fatalf("expected product list, got %v", updated.(instamartModel).screen)
+	}
+
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if updated.(instamartModel).screen != instamartScreenProductList {
+		t.Fatalf("expected esc to return to product list, got %v", updated.(instamartModel).screen)
 	}
 }
 
@@ -465,6 +496,9 @@ func TestInstamartCartReviewRendersCheckoutDetails(t *testing.T) {
 	if !strings.Contains(out, "38;2;0;170;68") || !strings.Contains(out, "38;2;255;68;68") {
 		t.Fatal("expected green plus and red minus diff markers")
 	}
+	if !strings.Contains(out, "48;") {
+		t.Fatal("expected GitHub-style add/remove row backgrounds")
+	}
 	if strings.Contains(out, "38;2;255;68;68m-Rs 20") {
 		t.Fatalf("discount value should not be colored red: %q", out)
 	}
@@ -494,7 +528,7 @@ func TestInstamartStableFrameHeightAndBodyAnchor(t *testing.T) {
 	if got := strings.Count(out, "\r\n"); got != 24 {
 		t.Fatalf("expected 80x24 frame height, got %d lines: %q", got, out)
 	}
-	bodyLine := renderedLineIndex(out, "deploying to:")
+	bodyLine := renderedLineIndex(out, "grep products")
 	if bodyLine < 0 {
 		t.Fatalf("expected home body anchor, got %q", out)
 	}
@@ -504,8 +538,8 @@ func TestInstamartStableFrameHeightAndBodyAnchor(t *testing.T) {
 	if got := strings.Count(withSlots, "\r\n"); got != 24 {
 		t.Fatalf("expected status/error frame height to stay fixed, got %d lines", got)
 	}
-	if renderedLineIndex(withSlots, "deploying to:") != bodyLine {
-		t.Fatalf("body anchor moved after status/error slots: before=%d after=%d", bodyLine, renderedLineIndex(withSlots, "deploying to:"))
+	if renderedLineIndex(withSlots, "grep products") != bodyLine {
+		t.Fatalf("body anchor moved after status/error slots: before=%d after=%d", bodyLine, renderedLineIndex(withSlots, "grep products"))
 	}
 }
 

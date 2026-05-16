@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 const productListRows = 9
@@ -146,17 +148,23 @@ func (m instamartModel) renderQuantity(sb *strings.Builder) {
 	}
 	sb.WriteString(line(brandStyle.Render(" stage item")))
 	status := "available"
+	statusStyle := successStyle
 	if !productRowAvailable(*m.selectedRow) {
 		status = "unavailable"
+		statusStyle = errorStyle
 	}
-	sb.WriteString(line(fmt.Sprintf(" item: %s", defaultString(m.selectedRow.Variation.DisplayName, m.selectedRow.Product.DisplayName))))
-	sb.WriteString(line(fmt.Sprintf(" pack: %s", defaultString(m.selectedRow.Variation.QuantityDescription, "-"))))
-	sb.WriteString(line(fmt.Sprintf(" price: Rs %d", m.selectedRow.Variation.Price.OfferPrice)))
-	sb.WriteString(line(" status: " + status))
-	sb.WriteString(line(fmt.Sprintf(" quantity: %s", boldStyle.Render(strconv.Itoa(m.quantity)))))
+	sb.WriteString(yamlLine("item", defaultString(m.selectedRow.Variation.DisplayName, m.selectedRow.Product.DisplayName), yamlValStyle))
+	sb.WriteString(yamlLine("pack", defaultString(m.selectedRow.Variation.QuantityDescription, "-"), yamlValStyle))
+	sb.WriteString(yamlLine("price", fmt.Sprintf("Rs %d", m.selectedRow.Variation.Price.OfferPrice), yamlValStyle))
+	sb.WriteString(yamlLine("status", status, statusStyle))
+	sb.WriteString(yamlLine("quantity", strconv.Itoa(m.quantity), successStyle))
 	sb.WriteString(line(""))
 	sb.WriteString(line(" Press enter to update the whole intended cart."))
 	sb.WriteString(line(" Set quantity to 0 to remove this variation."))
+}
+
+func yamlLine(key, value string, valueStyle lipgloss.Style) string {
+	return line(" " + yamlKeyStyle.Render(key+":") + " " + valueStyle.Render(value))
 }
 
 func productRowAvailable(row productVariationRow) bool {
