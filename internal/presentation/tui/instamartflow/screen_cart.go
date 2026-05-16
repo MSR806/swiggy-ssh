@@ -97,9 +97,8 @@ func billLineSign(bill domaininstamart.BillLine) string {
 }
 
 func (m instamartModel) renderCheckoutConfirm(sb *strings.Builder) {
-	sb.WriteString(centeredLine(brandStyle.Render("REAL SWIGGY ORDER")))
-	sb.WriteString(centeredLine("places a paid Instamart order"))
-	sb.WriteString(centeredLine("git push --force groceries"))
+	sb.WriteString(centeredLine("Are you sure you want to push --force groceries?"))
+	sb.WriteString(centeredLine(brandStyle.Render("git push --force groceries")))
 	sb.WriteString(line(""))
 	sb.WriteString(centeredLine(defaultString(m.currentCart.AddressLabel, selectedAddressLabel(m.selectedAddress))))
 	sb.WriteString(centeredLine("payment " + m.paymentMethod + " · total " + fmt.Sprintf("Rs %d", cartToPayRupees(m.currentCart))))

@@ -117,17 +117,7 @@ func (m instamartModel) headerRight() string {
 }
 
 func (m instamartModel) sessionStatus() string {
-	return "env=instamart  auth=ok  addr=" + m.sessionAddressLabel() + "  cart=" + strconv.Itoa(m.sessionCartCount()) + "  mode=" + m.screenMode()
-}
-
-func (m instamartModel) sessionAddressLabel() string {
-	if m.screen == instamartScreenStatic {
-		return defaultString(m.staticAddressLabel, "Home")
-	}
-	if m.selectedAddress != nil {
-		return addressLabel(*m.selectedAddress)
-	}
-	return "unset"
+	return "env=instamart  auth=ok  cart=" + strconv.Itoa(m.sessionCartCount()) + "  mode=" + m.screenMode()
 }
 
 func (m instamartModel) sessionCartCount() int {
@@ -166,7 +156,7 @@ func (m instamartModel) screenMode() string {
 	case instamartScreenCartReview:
 		return "cart"
 	case instamartScreenCheckoutConfirm:
-		return "ship"
+		return "deploy"
 	case instamartScreenOrderResult:
 		return "logs"
 	case instamartScreenOrders:

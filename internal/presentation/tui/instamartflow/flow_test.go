@@ -84,6 +84,9 @@ func TestInstamartSearchPreviewStaysOnSearchScreen(t *testing.T) {
 	if !strings.Contains(view, "preview · enter opens results") || strings.Contains(view, "searching...") {
 		t.Fatalf("expected preview rendering without searching copy, got %q", got.View())
 	}
+	if strings.Contains(view, "grep products: milk") {
+		t.Fatalf("query should only render in the input line, got %q", view)
+	}
 	if strings.Contains(view, cursorStyle.Render("> ")) || strings.Contains(view, "#   item") {
 		t.Fatalf("preview must not look selectable, got %q", view)
 	}
@@ -92,12 +95,23 @@ func TestInstamartSearchPreviewStaysOnSearchScreen(t *testing.T) {
 	}
 }
 
+func TestInstamartSearchTypingDoesNotClearScreen(t *testing.T) {
+	m := instamartModel{screen: instamartScreenSearchInput}
+	updated, cmd := m.handleSearchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd != nil {
+		t.Fatalf("single-character search input should not request a clear command")
+	}
+	if updated.(instamartModel).searchQuery != "d" {
+		t.Fatalf("expected query update, got %q", updated.(instamartModel).searchQuery)
+	}
+}
+
 func TestInstamartHomeUsesDeveloperCopyAndStatusBar(t *testing.T) {
 	address := domaininstamart.Address{ID: "addr-1", Label: "Home"}
 	m := instamartModel{screen: instamartScreenHome, selectedAddress: &address, intendedItems: []domaininstamart.CartUpdateItem{{SpinID: "spin-milk", Quantity: 3}}}
 	out := m.View()
 
-	for _, want := range []string{"grep products", "recent cache", "staged cart", "tail active order", "deploy history", "switch target address", "env=instamart  auth=ok  addr=Home  cart=3  mode=home"} {
+	for _, want := range []string{"grep products", "recent cache", "staged cart", "tail active order", "deploy history", "switch target address", "env=instamart  auth=ok  cart=3  mode=home"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in home output", want)
 		}
@@ -239,10 +253,13 @@ func TestInstamartQuantityRendersSelectedItemManifest(t *testing.T) {
 		quantity: 2,
 	}
 	out := m.View()
-	for _, want := range []string{"stage item", "item: Milk", "pack: 1 L", "price: Rs 60", "status: available", "action: stage item", "quantity:"} {
+	for _, want := range []string{"stage item", "item: Milk", "pack: 1 L", "price: Rs 60", "status: available", "quantity:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in quantity output", want)
 		}
+	}
+	if strings.Contains(out, "action: stage item") {
+		t.Fatalf("quantity output should not repeat the stage action, got %q", out)
 	}
 	if strings.Contains(out, "200") || strings.Contains(out, "409") {
 		t.Fatalf("quantity output should not render pseudo HTTP status codes: %q", out)
@@ -584,12 +601,12 @@ func TestInstamartCheckoutRequiresExplicitConfirmation(t *testing.T) {
 func TestInstamartCheckoutConfirmRendersDeployGate(t *testing.T) {
 	m := checkoutConfirmModel(&fakeInstamartService{})
 	out := m.View()
-	for _, want := range []string{"REAL SWIGGY ORDER", "places a paid Instamart order", "git push --force groceries", "Home", "payment Cash", "total Rs 80", "y deploy / n cancel"} {
+	for _, want := range []string{"Are you sure you want to push --force groceries?", "git push --force groceries", "Home", "payment Cash", "total Rs 80", "y deploy / n cancel"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in checkout confirmation", want)
 		}
 	}
-	for _, noisy := range []string{"[ok] address selected", "press y to confirm order", "ship order"} {
+	for _, noisy := range []string{"REAL SWIGGY ORDER", "places a paid Instamart order", "[ok] address selected", "press y to confirm order", "ship order"} {
 		if strings.Contains(out, noisy) {
 			t.Fatalf("checkout gate should not render noisy copy %q: %q", noisy, out)
 		}
@@ -632,7 +649,7 @@ func TestInstamartOperationTimingStatus(t *testing.T) {
 	}
 
 	updated, _ = instamartModel{screen: instamartScreenLoading}.Update(instamartCheckoutMsg{result: domaininstamart.CheckoutResult{Message: "ok"}, elapsed: 2*time.Minute + 3*time.Second})
-	if !strings.Contains(updated.(instamartModel).status, "deployed in 2m 03s") {
+	if !strings.Contains(updated.(instamartModel).status, "deploy complete") {
 		t.Fatalf("expected deploy timing, got %q", updated.(instamartModel).status)
 	}
 }

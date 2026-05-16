@@ -260,14 +260,14 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchPreviewProducts = nil
 				m.searchPreviewRows = nil
 				m.searchPreviewErr = displayErr("Could not load products", msg.err)
-				return clearOnScreenChange(previousScreen, m, tea.ClearScreen)
+				return clearOnScreenChange(previousScreen, m, nil)
 			}
 			m.searchPreviewLoaded = true
 			m.searchPreviewProducts = msg.result.Products
 			m.searchPreviewRows = flattenProductRows(msg.result.Products)
 			m.searchPreviewElapsed = msg.elapsed
 			m.searchPreviewErr = ""
-			return clearOnScreenChange(previousScreen, m, tea.ClearScreen)
+			return clearOnScreenChange(previousScreen, m, nil)
 		}
 		if msg.err != nil {
 			m.screen = instamartScreenHome
@@ -295,7 +295,7 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchPreviewRows = nil
 		m.searchPreviewElapsed = 0
 		m.searchPreviewErr = ""
-		return clearOnScreenChange(previousScreen, m, tea.Sequence(tea.ClearScreen, tea.Batch(m.searchProductsCmd(msg.query, true, msg.version), m.searchSpinnerCmd(msg.version))))
+		return clearOnScreenChange(previousScreen, m, tea.Batch(m.searchProductsCmd(msg.query, true, msg.version), m.searchSpinnerCmd(msg.version)))
 	case instamartSearchSpinnerMsg:
 		if m.screen != instamartScreenSearchInput || !m.searchPreviewLoading || msg.version != m.searchPreviewVersion {
 			return clearOnScreenChange(previousScreen, m, nil)
@@ -328,7 +328,7 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.checkoutResult = msg.result
 		m.checkoutElapsed = msg.elapsed
 		m.screen = instamartScreenOrderResult
-		m.status = "deployed in " + formatElapsed(msg.elapsed)
+		m.status = "deploy complete"
 		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartOrdersMsg:
 		if msg.err != nil {
@@ -358,9 +358,6 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tracking = msg.status
 		m.screen = instamartScreenTracking
 		m.status = "tailed in " + formatElapsed(msg.elapsed)
-		if msg.status.ETAText != "" {
-			m.status += " · ETA " + msg.status.ETAText
-		}
 		return clearOnScreenChange(previousScreen, m, nil)
 	}
 	return m, nil
@@ -371,10 +368,7 @@ func clearOnScreenChange(previous instamartScreen, model tea.Model, cmd tea.Cmd)
 	if !ok || updated.screen == previous {
 		return model, cmd
 	}
-	if cmd == nil {
-		return updated, tea.ClearScreen
-	}
-	return updated, tea.Sequence(tea.ClearScreen, cmd)
+	return updated, cmd
 }
 
 func (m instamartModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -474,7 +468,7 @@ func (m instamartModel) selectAddress(idx int) (tea.Model, tea.Cmd) {
 	m.selectedAddress = &m.addresses[idx]
 	m.screen = instamartScreenHome
 	m.homeCursor = 0
-	m.status = "deploying to " + addressLabel(m.addresses[idx])
+	m.status = "target locked"
 	m.err = ""
 	return m, nil
 }
@@ -611,10 +605,7 @@ func (m instamartModel) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func clearSearchRenderCmd(cmd tea.Cmd) tea.Cmd {
-	if cmd == nil {
-		return tea.ClearScreen
-	}
-	return tea.Sequence(tea.ClearScreen, cmd)
+	return cmd
 }
 
 func (m *instamartModel) queueSearchPreview() tea.Cmd {

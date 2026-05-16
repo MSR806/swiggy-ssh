@@ -9,12 +9,10 @@ import (
 const productListRows = 9
 
 func (m instamartModel) renderSearch(sb *strings.Builder) {
-	title := "grep products"
-	if strings.TrimSpace(m.searchQuery) != "" {
-		title += ": " + m.searchQuery
+	sb.WriteString(line(brandStyle.Render(" grep products")))
+	if !m.searchPreviewLoaded || m.searchPreviewQuery != m.searchQuery {
+		sb.WriteString(line(mutedStyle.Render(" preview · enter opens results")))
 	}
-	sb.WriteString(line(brandStyle.Render(" " + title)))
-	sb.WriteString(line(mutedStyle.Render(" preview · enter opens results")))
 	sb.WriteString(line(""))
 	sb.WriteString(line(" query: " + boldStyle.Render(m.searchQuery) + cursorStyle.Render("_")))
 
@@ -73,10 +71,8 @@ func productPreviewRow(row productVariationRow) string {
 }
 
 func (m instamartModel) renderProducts(sb *strings.Builder) {
-	title := "grep products"
-	if strings.TrimSpace(m.searchQuery) != "" {
-		title += ": " + m.searchQuery
-	} else {
+	title := "grep results"
+	if strings.TrimSpace(m.searchQuery) == "" {
 		title = "recent cache"
 	}
 	sb.WriteString(line(brandStyle.Render(" " + title)))
@@ -157,7 +153,6 @@ func (m instamartModel) renderQuantity(sb *strings.Builder) {
 	sb.WriteString(line(fmt.Sprintf(" pack: %s", defaultString(m.selectedRow.Variation.QuantityDescription, "-"))))
 	sb.WriteString(line(fmt.Sprintf(" price: Rs %d", m.selectedRow.Variation.Price.OfferPrice)))
 	sb.WriteString(line(" status: " + status))
-	sb.WriteString(line(" action: stage item"))
 	sb.WriteString(line(fmt.Sprintf(" quantity: %s", boldStyle.Render(strconv.Itoa(m.quantity)))))
 	sb.WriteString(line(""))
 	sb.WriteString(line(" Press enter to update the whole intended cart."))
