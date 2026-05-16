@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	domainauth "swiggy-ssh/internal/domain/auth"
@@ -11,14 +12,23 @@ import (
 
 type OAuthAccount = domainauth.OAuthAccount
 type Repository = domainauth.Repository
+type BrowserAuthAttempt = domainauth.BrowserAuthAttempt
+type BrowserAuthAttemptService = domainauth.BrowserAuthAttemptService
+type BrowserAuthProvider = domainauth.BrowserAuthProvider
+type BrowserAuthCallbackProvider = domainauth.BrowserAuthCallbackProvider
+type BrowserAuthStartInput = domainauth.BrowserAuthStartInput
+type BrowserAuthStartOutput = domainauth.BrowserAuthStartOutput
+type BrowserAuthCallbackInput = domainauth.BrowserAuthCallbackInput
+type BrowserAuthCredentials = domainauth.BrowserAuthCredentials
 type LoginCode = domainauth.LoginCode
 type LoginCodeService = domainauth.LoginCodeService
 type TokenEncryptor = domainauth.TokenEncryptor
 
 const (
-	LoginCodeStatusPending   = domainauth.LoginCodeStatusPending
-	LoginCodeStatusCompleted = domainauth.LoginCodeStatusCompleted
-	LoginCodeStatusCancelled = domainauth.LoginCodeStatusCancelled
+	AuthAttemptStatusPending   = domainauth.AuthAttemptStatusPending
+	AuthAttemptStatusClaimed   = domainauth.AuthAttemptStatusClaimed
+	AuthAttemptStatusCompleted = domainauth.AuthAttemptStatusCompleted
+	AuthAttemptStatusCancelled = domainauth.AuthAttemptStatusCancelled
 
 	OAuthAccountStatusActive            = domainauth.OAuthAccountStatusActive
 	OAuthAccountStatusExpired           = domainauth.OAuthAccountStatusExpired
@@ -26,13 +36,24 @@ const (
 	OAuthAccountStatusRevoked           = domainauth.OAuthAccountStatusRevoked
 )
 
+const (
+	LoginCodeStatusPending   = domainauth.LoginCodeStatusPending
+	LoginCodeStatusCompleted = domainauth.LoginCodeStatusCompleted
+	LoginCodeStatusCancelled = domainauth.LoginCodeStatusCancelled
+)
+
 var ErrTokenExpired = domainauth.ErrTokenExpired
 var ErrTokenReconnectRequired = domainauth.ErrTokenReconnectRequired
 var ErrTokenRevoked = domainauth.ErrTokenRevoked
 var ErrOAuthAccountNotFound = domainauth.ErrOAuthAccountNotFound
 var ErrAccountRevoked = domainauth.ErrAccountRevoked
+var ErrAuthAttemptNotFound = domainauth.ErrAuthAttemptNotFound
+var ErrAuthAttemptAlreadyUsed = domainauth.ErrAuthAttemptAlreadyUsed
+var ErrBrowserAuthProviderUnavailable = domainauth.ErrBrowserAuthProviderUnavailable
+var ErrBrowserAuthProviderCallback = domainauth.ErrBrowserAuthProviderCallback
 var ErrLoginCodeNotFound = domainauth.ErrLoginCodeNotFound
 var ErrLoginCodeAlreadyUsed = domainauth.ErrLoginCodeAlreadyUsed
+var ErrOAuthAccountUserRequired = domainauth.ErrOAuthAccountUserRequired
 
 var ValidateTokenForUse = domainauth.ValidateTokenForUse
 
@@ -43,16 +64,22 @@ const (
 
 // EnsureValidAccountInput contains the account context needed to validate or establish an OAuth account.
 type EnsureValidAccountInput struct {
-	UserID         string
-	AllowFirstAuth bool
-	Reauth         func(ctx context.Context) error
+	UserID             string
+	AllowFirstAuth     bool
+	Reauth             func(ctx context.Context) error
+	AuthAttemptService BrowserAuthAttemptService
+	TerminalSessionID  string
+	PublicBaseURL      string
 }
 
 // EnsureValidAccountOutput tells the caller what happened so it can render the right terminal message.
 type EnsureValidAccountOutput struct {
-	Account     OAuthAccount
-	IsFirstAuth bool // true when a new account record was created
-	WasReauth   bool // true when the user went through a re-auth loop
+	Account          OAuthAccount
+	IsFirstAuth      bool // true when a new account record was created
+	WasReauth        bool // true when the user went through a re-auth loop
+	AuthRequired     bool
+	LoginURL         string
+	AuthAttemptToken string
 }
 
 // EnsureValidAccountUseCase orchestrates the OAuth account lifecycle for a terminal session.
@@ -73,7 +100,9 @@ func NewEnsureValidAccountUseCase(repo Repository) *EnsureValidAccountUseCase {
 // Execute checks or establishes a valid OAuth account for input.UserID.
 //
 // Behaviour:
-//   - If no account exists and AllowFirstAuth is true → creates a mock active account and returns IsFirstAuth=true.
+//   - If UserID is empty → returns ErrOAuthAccountUserRequired without querying/persisting accounts.
+//   - If no account exists and AllowFirstAuth is true with AuthAttemptService → returns AuthRequired with a direct login URL.
+//   - If no account exists and AllowFirstAuth is true without AuthAttemptService → creates a mock active account and returns IsFirstAuth=true.
 //   - If no account exists and AllowFirstAuth is false → returns ErrOAuthAccountNotFound.
 //   - If account exists and is valid → returns the account as-is.
 //   - If account is expired or reconnect_required → calls reauth to issue a new login code,
@@ -84,11 +113,18 @@ func NewEnsureValidAccountUseCase(repo Repository) *EnsureValidAccountUseCase {
 // It should issue a new login code, show it to the user, poll for completion,
 // and return nil on success or an error (including context cancellation) on failure.
 func (s *EnsureValidAccountUseCase) Execute(ctx context.Context, input EnsureValidAccountInput) (EnsureValidAccountOutput, error) {
+	if input.UserID == "" {
+		return EnsureValidAccountOutput{}, ErrOAuthAccountUserRequired
+	}
+
 	account, err := s.repo.FindOAuthAccountByUserAndProvider(ctx, input.UserID, MockProvider)
 	if err != nil {
 		if errors.Is(err, ErrOAuthAccountNotFound) {
 			if !input.AllowFirstAuth {
 				return EnsureValidAccountOutput{}, ErrOAuthAccountNotFound
+			}
+			if input.AuthAttemptService != nil {
+				return s.issueAuthRequired(ctx, input)
 			}
 			newAccount, createErr := s.createMockAccount(ctx, input.UserID)
 			if createErr != nil {
@@ -104,6 +140,9 @@ func (s *EnsureValidAccountUseCase) Execute(ctx context.Context, input EnsureVal
 		case errors.Is(err, ErrTokenRevoked):
 			return EnsureValidAccountOutput{}, ErrAccountRevoked
 		case errors.Is(err, ErrTokenExpired), errors.Is(err, ErrTokenReconnectRequired):
+			if input.AuthAttemptService != nil {
+				return s.issueAuthRequired(ctx, input)
+			}
 			if input.Reauth == nil {
 				return EnsureValidAccountOutput{}, err
 			}
@@ -121,6 +160,18 @@ func (s *EnsureValidAccountUseCase) Execute(ctx context.Context, input EnsureVal
 	}
 
 	return EnsureValidAccountOutput{Account: account}, nil
+}
+
+func (s *EnsureValidAccountUseCase) issueAuthRequired(ctx context.Context, input EnsureValidAccountInput) (EnsureValidAccountOutput, error) {
+	rawAttempt, _, err := input.AuthAttemptService.IssueAuthAttempt(ctx, input.UserID, input.TerminalSessionID)
+	if err != nil {
+		return EnsureValidAccountOutput{}, fmt.Errorf("issue auth attempt: %w", err)
+	}
+	return EnsureValidAccountOutput{
+		AuthRequired:     true,
+		LoginURL:         input.PublicBaseURL + "/auth/start?attempt=" + url.QueryEscape(rawAttempt),
+		AuthAttemptToken: rawAttempt,
+	}, nil
 }
 
 // createMockAccount creates a new mock OAuth account for a first-time user.

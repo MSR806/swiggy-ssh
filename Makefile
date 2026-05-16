@@ -1,4 +1,4 @@
-.PHONY: dev build up down logs ps migrate migrate-down test test-integration lint fmt
+.PHONY: dev dev-swiggy build up up-swiggy down logs ps migrate migrate-down test test-integration lint fmt
 
 # ── Docker Compose ────────────────────────────────────────────────────────────
 
@@ -7,6 +7,9 @@ build:
 
 up:
 	docker compose up -d
+
+up-swiggy:
+	SWIGGY_PROVIDER=swiggy SWIGGY_CLIENT_ID=$${SWIGGY_CLIENT_ID:-swiggy-mcp} docker compose up -d
 
 down:
 	docker compose down
@@ -24,6 +27,9 @@ reset:
 
 dev:
 	go run ./cmd/swiggy-ssh
+
+dev-swiggy:
+	SWIGGY_PROVIDER=swiggy SWIGGY_CLIENT_ID=$${SWIGGY_CLIENT_ID:-swiggy-mcp} go run ./cmd/swiggy-ssh
 
 migrate:
 	go run ./cmd/swiggy-ssh-migrate up

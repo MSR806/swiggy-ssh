@@ -1,6 +1,6 @@
 ---
 name: swiggy-ssh-auth
-description: Use when building or modifying the end-to-end SSH + browser authentication flow for swiggy-ssh. Covers host key management, SSH public key identity, login code flow, OAuth token lifecycle, re-authentication, HTTP login page, and database schema.
+description: Use when building or modifying the end-to-end SSH + browser authentication flow for swiggy-ssh. Covers host key management, SSH public key identity, browser auth attempts, Swiggy OAuth 2.1 + PKCE, token lifecycle, re-authentication, HTTP auth routes, and database schema.
 license: MIT
 metadata:
   author: swiggy-ssh team
@@ -22,7 +22,7 @@ swiggy.dev
 └── HTTP server (port 8080)  ← user opens in browser to complete login
 ```
 
-They share one thing: a **login code** stored in Redis. That code is the bridge between the terminal session and the browser login.
+They share one thing: a **browser auth attempt** stored in Redis. The SSH TUI renders a one-time `/auth/start?attempt=...` URL; the HTTP server validates the attempt, redirects to Swiggy OAuth, exchanges the callback code, and marks the attempt completed for the SSH poll loop.
 
 ---
 
@@ -54,11 +54,12 @@ They share one thing: a **login code** stored in Redis. That code is the bridge 
 - The server computes a short unique fingerprint from the public key: `ssh.FingerprintSHA256(key)`
 - Known fingerprints are stored in `ssh_identities.public_key_fingerprint` in Postgres
 - On reconnect with a known, non-revoked key, `ResolveSSHIdentityUseCase.Execute(ctx, input)` looks up the fingerprint → finds the linked user
-- Unknown fingerprints return `ErrNotFound`; they do **not** auto-create `users` or `ssh_identities`
+- Unknown fingerprints return `ErrNotFound` during initial session resolution
 - Revoked known keys return `ErrSSHIdentityRevoked` and are not treated as durable identities
 - No-key and unknown-key SSH connections start guest terminal sessions with no `user_id` or `ssh_identity_id`; unknown-key sessions keep the fingerprint on the terminal session for observability
+- When an unknown-key user chooses Instamart/login, `RegisterSSHIdentityUseCase` provisions or resolves a durable `User + SSHIdentity` before issuing a browser auth attempt. This gives the OAuth callback a real `user_id` for token persistence.
 
-**Why accept any key?** The SSH key is not an access gate. It is only a durable-account lookup hint. Unknown keys are deliberately guest-only so random SSH keys do not create persistent users or key bindings.
+**Why accept any key?** The SSH key is not an access gate. It is a durable-account lookup hint. Unknown keys begin as guest sessions and are only persisted when the user explicitly starts Swiggy login.
 
 **Fingerprint vs public key:**
 - Public key: long raw string (`ssh-ed25519 AAAA...`)
@@ -68,58 +69,59 @@ They share one thing: a **login code** stored in Redis. That code is the bridge 
 
 ---
 
-## Concept 3: Login Code Flow
+## Concept 3: Browser Auth Attempt + PKCE Flow
 
-**What it is:** A short one-time code (like an OTP) that bridges the SSH terminal session to the browser login.
+**What it is:** A short-lived one-time auth attempt that bridges the SSH terminal session to browser-based Swiggy OAuth 2.1 + PKCE. Users no longer type a code manually.
 
 **States:**
 ```
-PENDING   → generated, waiting for user to login in browser
-COMPLETED → user logged in successfully
-CANCELLED → expired or user cancelled
+PENDING   → generated, waiting for /auth/start
+CLAIMED   → callback is being consumed; replay is blocked
+COMPLETED → token persisted, SSH may proceed
+CANCELLED → expired, failed, or user cancelled
 ```
 
 **Flow:**
 1. User connects via SSH and lands on the home screen
 2. User chooses Instamart
-3. If login is required, server generates a random login code and stores its hash in Redis with a TTL (default 10 minutes, configured via `LOGIN_CODE_TTL`)
-4. Server shows the user: `"Open swiggy.dev/login — Enter code: ABCD-1234"`
-5. Server starts polling every 2 seconds
-6. User opens browser, visits `/login`, enters the code
-7. HTTP server marks the code as `COMPLETED` in Redis
-8. Poll loop detects `COMPLETED` → session proceeds. For guest sessions this unlocks Instamart only for the current SSH session; it is repeated on every reconnect.
+3. If login is required, server creates a browser auth attempt with a high-entropy attempt token and PKCE `code_verifier`; Redis stores the SHA-256 hash as key and the verifier in the TTL-limited value
+4. Server shows the user a direct URL: `https://swiggy.dev/auth/start?attempt=...`
+5. The TUI renders an OSC-8 clickable label, the full wrapped URL, and supports `c` copy via OSC-52 where terminals allow it
+6. User opens `/auth/start`; HTTP validates the pending attempt and redirects to Swiggy `/auth/authorize`
+7. Swiggy redirects back to `/auth/callback?code=...&state=...`
+8. HTTP validates state, claims the attempt, exchanges `code + code_verifier` at `/auth/token`, persists the encrypted access token, marks the attempt `COMPLETED`
+9. SSH poll loop detects `COMPLETED` → session proceeds
 
 **Key files:** `internal/presentation/ssh/server.go`, `internal/application/auth/ensure_valid_account.go`, `internal/presentation/http/handlers.go`
 
 ---
 
-## Concept 4: HTTP Login Page
+## Concept 4: HTTP Auth Routes
 
-**What it is:** A minimal web server with 3 routes that serves the browser-facing login form.
+**What it is:** A minimal web server that starts and completes browser auth.
 
 **Routes:**
 ```
 GET  /health  → {"status":"ok"} — health check
-GET  /login   → shows login form (enter code from terminal)
-POST /login   → submits code → marks it COMPLETED in Redis → shows success page
+GET  /auth/start?attempt=... → validates attempt and redirects to Swiggy OAuth
+GET  /auth/callback?code=...&state=... → exchanges code and completes attempt
+GET  /login → compatibility/help page; prefer /auth/start
+POST /login → compatibility redirect where supported
 ```
 
-**Current state:** The `/login` page accepts a code but does NOT yet redirect to Swiggy OAuth. Anyone who knows the code can complete login. The Swiggy OAuth integration needs to be added here.
+**Swiggy OAuth redirect:**
+```
+https://mcp.swiggy.com/auth/authorize?
+  response_type=code&
+  client_id=swiggy-mcp&
+  redirect_uri=<PUBLIC_BASE_URL>/auth/callback&
+  code_challenge=<S256 challenge>&
+  code_challenge_method=S256&
+  state=<attempt token>&
+  scope=mcp:tools
+```
 
-**Planned flow (when Swiggy is integrated):**
-```
-User visits /login
-      ↓
-Redirect to Swiggy OAuth login page
-      ↓
-User logs in with Swiggy credentials
-      ↓
-Swiggy redirects back to /login with auth code
-      ↓
-Server exchanges code for access token
-      ↓
-Marks login code COMPLETED + saves token
-```
+**Token exchange:** `POST https://mcp.swiggy.com/auth/token` with `grant_type=authorization_code`, `code`, `code_verifier`, `client_id`, and exact `redirect_uri`.
 
 **Key file:** `internal/presentation/http/handlers.go`
 
@@ -142,15 +144,15 @@ revoked             → hard block, user must contact support
 User connects
      ↓
 Check token status
-     ↓
+      ↓
 active             → "Welcome back!"
-expired/reconnect  → show new login code in terminal
-                     user logs in browser again
+expired/reconnect  → show new browser auth URL in terminal
+                     user logs in browser again via PKCE
                      new token saved → session continues
 revoked            → "Access revoked. Contact support."
 ```
 
-**Current state:** Tokens are mocked (`mock-token-<userID>`), expiring after 24 hours. Real Swiggy token refresh is not yet implemented.
+**Current state:** `SWIGGY_PROVIDER=mock` short-circuits browser auth for local tests. `SWIGGY_PROVIDER=swiggy` uses Swiggy OAuth 2.1 + PKCE with default client id `swiggy-mcp`.
 
 **Key file:** `internal/application/auth/ensure_valid_account.go`
 
@@ -218,21 +220,23 @@ terminal_sessions          (one user → many sessions)
 3. Server accepts SSH with or without a client public key
    - If a key is provided, computes its fingerprint
    - Looks up fingerprint in DB → known key resolves durable user identity
-   - Unknown key or no key → guest session, no user/key rows created
+   - Unknown key or no key → guest session at first
         ↓
 4. User chooses Instamart from the terminal home screen
         ↓
-5. If login is required, server generates a login code (stored hashed in Redis, 10min TTL)
-   - Shows user: "Open swiggy.dev/login — Enter code: ABCD-1234"
+5. If login is required and a public key is present, server provisions/resolves durable `User + SSHIdentity`
+   - Creates browser auth attempt with PKCE verifier, TTL default 10 minutes
+   - Shows user: "Open swiggy.dev/auth/start?attempt=..."
    - Starts polling Redis every 2 seconds
         ↓
-6. User opens browser → visits swiggy.dev/login
-   - Enters code (future: redirected to Swiggy OAuth first)
-   - Code marked COMPLETED in Redis
+6. User opens browser → visits /auth/start
+   - Redirects to Swiggy OAuth authorize endpoint
+   - Swiggy redirects back to /auth/callback with code + state
+   - Server exchanges code using stored PKCE verifier
+   - Token is encrypted and persisted in oauth_accounts
         ↓
 7. Poll loop detects COMPLETED
-   - Known durable user: `EnsureValidAccountUseCase.Execute` checks/creates the stored OAuth account, and re-auths if expired
-   - Guest: no OAuth account is written to Postgres; login completion applies only to this terminal session
+   - `EnsureValidAccountUseCase.Execute` checks the stored OAuth account and re-auths if expired
         ↓
 8. Terminal proceeds to the current Instamart placeholder
 ```
@@ -243,10 +247,10 @@ terminal_sessions          (one user → many sessions)
 
 | Missing piece | Where to add it |
 |---------------|----------------|
-| Swiggy OAuth login redirect | `internal/presentation/http/handlers.go:handleLoginGet` |
-| Swiggy OAuth callback handler | New route `GET /login/callback` in `internal/presentation/http/server.go` |
-| Real Swiggy token exchange | `internal/infrastructure/provider/swiggy/client.go` — implement `Client` interface |
-| Real token refresh on re-auth | `internal/application/auth/ensure_valid_account.go:refreshMockAccount` |
+| Real Instamart API calls using stored token | `internal/infrastructure/provider/swiggy/client.go` |
+| Terminal session user update after first-login provisioning | `internal/application/identity` + persistence session repository |
+| Refresh tokens | Not available in Swiggy v1.0; re-run OAuth on 401/expiry |
+| Full `LoginCode*` naming cleanup | Auth domain/cache/config follow-up |
 
 ---
 
@@ -261,8 +265,12 @@ terminal_sessions          (one user → many sessions)
 | `DATABASE_URL` | `postgres://...localhost` | Postgres connection string |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection string |
 | `PUBLIC_BASE_URL` | `http://localhost:8080` | Base URL shown to users in login prompt |
-| `LOGIN_CODE_TTL` | `10m` | How long a login code is valid |
-| `SWIGGY_PROVIDER` | `mock` | Set to `swiggy` when real integration is ready |
+| `LOGIN_CODE_TTL` | `10m` | How long a browser auth attempt is valid |
+| `SWIGGY_PROVIDER` | `mock` | Set to `swiggy` for real Swiggy OAuth |
+| `SWIGGY_CLIENT_ID` | `swiggy-mcp` | OAuth client id used for Swiggy auth |
+| `SWIGGY_AUTH_AUTHORIZE_URL` | `https://mcp.swiggy.com/auth/authorize` | Swiggy OAuth authorize endpoint |
+| `SWIGGY_AUTH_TOKEN_URL` | `https://mcp.swiggy.com/auth/token` | Swiggy OAuth token endpoint |
+| `SWIGGY_AUTH_SCOPES` | `mcp:tools` | OAuth scopes requested |
 | `APP_ENV` | `local` | Environment name (`local`, `production`, etc.) |
 
 ---
@@ -273,8 +281,8 @@ terminal_sessions          (one user → many sessions)
 |---------|-----|
 | Multiple servers show different host key fingerprints | Share host key via secrets manager — all instances must use the same key |
 | `TOKEN_ENCRYPTION_KEY` not set in production | Set to a securely generated 32-byte base64url key — the dev default is public |
-| Login code accepted without Swiggy login | Swiggy OAuth is not yet integrated — `/login` currently accepts any code submission |
+| Login URL cannot be copied | Use the wrapped fallback URL; `c` attempts OSC-52 clipboard copy but terminal support varies |
 | User sees "fingerprint changed" warning | Old host key on disk differs from new one — delete `.local/ssh_host_ed25519_key` or restore the correct key |
 | Token expired but re-auth not triggered | Check `ValidateTokenForUse` — token status must be `expired` or `reconnect_required` to trigger re-auth |
-| Unknown SSH key creates a persistent user | This is no longer allowed — `ResolveSSHIdentityUseCase` must return `ErrNotFound`, and SSH presentation starts a guest session |
-| Guest auth persists across reconnects | Guest login is session-only by design; users must reconnect with a known key for durable OAuth fast-path behavior |
+| Unknown SSH key creates a persistent user too early | Initial resolve must return guest; durable user/key creation happens only when the user explicitly starts login |
+| OAuth callback has empty user id | Browser auth attempts must be issued only after durable identity provisioning; callback rejects empty-user attempts defensively |

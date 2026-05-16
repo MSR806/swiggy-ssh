@@ -2,6 +2,8 @@ package auth_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
@@ -14,11 +16,46 @@ import (
 type mockAuthRepo struct {
 	account   auth.OAuthAccount
 	findErr   error
+	findCalls int
 	upserted  auth.OAuthAccount
 	upsertErr error
 }
 
+type mockAttemptService struct{}
+
+func (m *mockAttemptService) IssueAuthAttempt(_ context.Context, userID, terminalSessionID string) (string, auth.BrowserAuthAttempt, error) {
+	rawToken := "opaque-attempt-token"
+	h := sha256.Sum256([]byte(rawToken))
+	return rawToken, auth.BrowserAuthAttempt{
+		TokenHash:         hex.EncodeToString(h[:]),
+		UserID:            userID,
+		TerminalSessionID: terminalSessionID,
+		Status:            auth.AuthAttemptStatusPending,
+	}, nil
+}
+
+func (m *mockAttemptService) GetAuthAttempt(_ context.Context, _ string) (auth.BrowserAuthAttempt, error) {
+	return auth.BrowserAuthAttempt{}, nil
+}
+
+func (m *mockAttemptService) CompleteAuthAttempt(_ context.Context, _ string) error { return nil }
+
+func (m *mockAttemptService) ClaimAuthAttempt(_ context.Context, _ string) (auth.BrowserAuthAttempt, error) {
+	return auth.BrowserAuthAttempt{Status: auth.AuthAttemptStatusClaimed}, nil
+}
+
+func (m *mockAttemptService) CompleteClaimedAuthAttempt(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *mockAttemptService) CancelClaimedAuthAttempt(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *mockAttemptService) CancelAuthAttempt(_ context.Context, _ string) error { return nil }
+
 func (r *mockAuthRepo) FindOAuthAccountByUserAndProvider(_ context.Context, _, _ string) (auth.OAuthAccount, error) {
+	r.findCalls++
 	return r.account, r.findErr
 }
 
@@ -60,6 +97,62 @@ func TestEnsureValidAccountFirstAuth(t *testing.T) {
 	}
 	if repo.upserted.UserID != "user-1" {
 		t.Fatalf("expected upserted user-1, got %s", repo.upserted.UserID)
+	}
+}
+
+func TestEnsureValidAccountMissingAccountReturnsDirectAuthURL(t *testing.T) {
+	repo := &mockAuthRepo{findErr: auth.ErrOAuthAccountNotFound}
+	useCase := auth.NewEnsureValidAccountUseCase(repo)
+
+	result, err := useCase.Execute(context.Background(), auth.EnsureValidAccountInput{
+		UserID:             "user-1",
+		AllowFirstAuth:     true,
+		AuthAttemptService: &mockAttemptService{},
+		TerminalSessionID:  "session-1",
+		PublicBaseURL:      "http://localhost:8080",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.AuthRequired {
+		t.Fatal("expected AuthRequired=true")
+	}
+	if result.LoginURL != "http://localhost:8080/auth/start?attempt=opaque-attempt-token" {
+		t.Fatalf("unexpected login URL: %s", result.LoginURL)
+	}
+	if result.AuthAttemptToken != "opaque-attempt-token" {
+		t.Fatalf("unexpected auth attempt token: %s", result.AuthAttemptToken)
+	}
+}
+
+func TestEnsureValidAccountGuestAuthAttemptReturnsControlledError(t *testing.T) {
+	repo := &mockAuthRepo{}
+	useCase := auth.NewEnsureValidAccountUseCase(repo)
+
+	_, err := useCase.Execute(context.Background(), auth.EnsureValidAccountInput{
+		AllowFirstAuth:     true,
+		AuthAttemptService: &mockAttemptService{},
+		TerminalSessionID:  "session-1",
+		PublicBaseURL:      "http://localhost:8080",
+	})
+	if !errors.Is(err, auth.ErrOAuthAccountUserRequired) {
+		t.Fatalf("expected ErrOAuthAccountUserRequired, got %v", err)
+	}
+	if repo.findCalls != 0 {
+		t.Fatalf("expected no oauth lookup for guest, got %d", repo.findCalls)
+	}
+}
+
+func TestEnsureValidAccountGuestWithoutAuthAttemptReturnsControlledError(t *testing.T) {
+	repo := &mockAuthRepo{}
+	useCase := auth.NewEnsureValidAccountUseCase(repo)
+
+	_, err := useCase.Execute(context.Background(), auth.EnsureValidAccountInput{AllowFirstAuth: true})
+	if !errors.Is(err, auth.ErrOAuthAccountUserRequired) {
+		t.Fatalf("expected ErrOAuthAccountUserRequired, got %v", err)
+	}
+	if repo.findCalls != 0 {
+		t.Fatalf("expected no oauth lookup for guest, got %d", repo.findCalls)
 	}
 }
 
@@ -117,6 +210,34 @@ func TestEnsureValidAccountExpiredTriggersReauth(t *testing.T) {
 	}
 	if result.Account.Status != auth.OAuthAccountStatusActive {
 		t.Fatalf("expected refreshed account to be active, got %s", result.Account.Status)
+	}
+}
+
+func TestEnsureValidAccountExpiredCanReturnDirectAuthURL(t *testing.T) {
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	repo := &mockAuthRepo{
+		account: auth.OAuthAccount{
+			Status:         auth.OAuthAccountStatusActive,
+			TokenExpiresAt: &past,
+			AccessToken:    "old-token",
+		},
+	}
+	useCase := auth.NewEnsureValidAccountUseCase(repo)
+
+	result, err := useCase.Execute(context.Background(), auth.EnsureValidAccountInput{
+		UserID:             "user-1",
+		AuthAttemptService: &mockAttemptService{},
+		TerminalSessionID:  "session-1",
+		PublicBaseURL:      "http://localhost:8080",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.AuthRequired {
+		t.Fatal("expected AuthRequired=true")
+	}
+	if result.LoginURL != "http://localhost:8080/auth/start?attempt=opaque-attempt-token" {
+		t.Fatalf("unexpected login URL: %s", result.LoginURL)
 	}
 }
 

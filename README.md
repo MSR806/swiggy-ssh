@@ -48,7 +48,7 @@ Connect in a second terminal:
 ssh -p 2222 -i ~/.ssh/id_ed25519 localhost
 ```
 
-**First Instamart session** — choose Instamart from the terminal home screen, then the app shows a URL and short login code. Open the URL in your browser, submit the code, and the session continues.
+**First Instamart session** — choose Instamart from the terminal home screen, then the app shows a browser login URL. Open the URL in your browser and complete Swiggy login; the SSH session continues automatically.
 
 **Returning Instamart sessions** skip the login step while the linked account token is still valid.
 
@@ -61,6 +61,7 @@ ssh -p 2222 -i ~/.ssh/id_ed25519 localhost
 | Command | What it does |
 |---|---|
 | `make up` | Build image + start everything (app, migrate, Postgres, Redis) |
+| `make up-swiggy` | Start everything with real Swiggy OAuth instead of mock auth; defaults client id to `swiggy-mcp` |
 | `make down` | Stop and remove all containers |
 | `make build` | Rebuild the app image without starting |
 | `make logs` | Tail app logs |
@@ -72,6 +73,7 @@ ssh -p 2222 -i ~/.ssh/id_ed25519 localhost
 | Command | What it does |
 |---|---|
 | `make dev` | Run the app on host (requires Postgres + Redis running) |
+| `make dev-swiggy` | Run the app on host with real Swiggy OAuth instead of mock auth; defaults client id to `swiggy-mcp` |
 | `make migrate` | Apply all pending DB migrations |
 | `make migrate-down` | Roll back one migration step |
 
@@ -88,7 +90,37 @@ ssh -p 2222 -i ~/.ssh/id_ed25519 localhost
 
 ## Environment variables
 
-Copy `.env.example` to `.env` — all defaults work out of the box for local development. Every variable is documented with inline comments in `.env.example`.
+Copy `.env.example` to `.env` — mock defaults work out of the box for local development. To use real Swiggy OAuth locally, set:
+
+```env
+SWIGGY_PROVIDER=swiggy
+SWIGGY_CLIENT_ID=swiggy-mcp
+PUBLIC_BASE_URL=http://localhost:8080
+SWIGGY_AUTH_AUTHORIZE_URL=https://mcp.swiggy.com/auth/authorize
+SWIGGY_AUTH_TOKEN_URL=https://mcp.swiggy.com/auth/token
+SWIGGY_AUTH_SCOPES=mcp:tools
+```
+
+Then ensure Swiggy has allowlisted this exact redirect URI for your client:
+
+```text
+http://localhost:8080/auth/callback
+```
+
+Run with Docker:
+
+```bash
+make up-swiggy
+```
+
+Or run on host:
+
+```bash
+make up # Postgres + Redis
+make dev-swiggy
+```
+
+Every variable is documented with inline comments in `.env.example`.
 
 ---
 
@@ -96,10 +128,10 @@ Copy `.env.example` to `.env` — all defaults work out of the box for local dev
 
 1. **SSH connect** — your Ed25519 public key fingerprint is used to look up or create your user record in Postgres.
 2. **Home / Instamart selection** — the SSH TUI opens at the home screen. Auth starts when the user selects Instamart.
-3. **Login code** — a short-lived `XXXX-XXXX` code is issued and displayed in the terminal when login is required. Only the SHA-256 hash is stored in Redis — the raw code is never persisted.
-4. **Browser confirm** — open `http://localhost:8080/login`, submit the code. The browser page calls `CompleteLoginCode`; the SSH session polls every 2 seconds.
-5. **Account check** — before login, the auth use case only fast-paths existing valid accounts. After browser confirmation, it may create a new mock Swiggy account (first time) or validate your existing one. Expired or reconnect-required accounts trigger a fresh login code automatically.
-6. **Returning users** — if your account is already valid, the login-code step is skipped and the session proceeds to the Instamart placeholder.
+3. **Browser auth attempt** — a short-lived one-time auth attempt is issued. Only a SHA-256 hash of the public attempt token is used as the Redis key; PKCE verifier material is stored only in the TTL-limited Redis value.
+4. **Swiggy OAuth** — open the terminal URL. `/auth/start` redirects to `https://mcp.swiggy.com/auth/authorize` with OAuth 2.1 + PKCE params. Swiggy redirects back to `/auth/callback` with `code` and `state`.
+5. **Token exchange** — the server exchanges `code + code_verifier` at `https://mcp.swiggy.com/auth/token`, encrypts the returned access token, and marks the auth attempt completed. The SSH session polls every 2 seconds.
+6. **Returning users** — if your account is already valid, the browser-auth step is skipped and the session proceeds to the Instamart placeholder.
 
 ---
 
