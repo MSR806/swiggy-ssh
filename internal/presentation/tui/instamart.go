@@ -12,8 +12,9 @@ import (
 // InstamartPlaceholderView is the backward-compat alias used by runSession.
 // Renders the full Instamart screen with placeholder/zero values.
 type InstamartPlaceholderView struct {
-	UserID string
-	In     io.Reader
+	UserID        string
+	StatusMessage string
+	In            io.Reader
 }
 
 func (v InstamartPlaceholderView) Render(ctx context.Context, w io.Writer) error {
@@ -21,6 +22,7 @@ func (v InstamartPlaceholderView) Render(ctx context.Context, w io.Writer) error
 		AddressLabel:  "Home",
 		AddressLine:   "221B, 12th Main, Indiranagar, Bengaluru",
 		CartItemCount: 0,
+		StatusMessage: v.StatusMessage,
 		In:            v.In,
 	}.Render(ctx, w)
 }
@@ -30,6 +32,7 @@ type InstamartView struct {
 	AddressLabel  string // e.g. "Home"
 	AddressLine   string // e.g. "221B, 12th Main, Indiranagar, Bengaluru"
 	CartItemCount int
+	StatusMessage string
 	In            io.Reader // if nil, static render
 }
 
@@ -49,6 +52,7 @@ type instamartModel struct {
 	addressLabel string
 	addressLine  string
 	cartCount    int
+	status       string
 }
 
 func (m instamartModel) Init() tea.Cmd {
@@ -85,6 +89,9 @@ func (m instamartModel) View() string {
 	sb.WriteString(divider())
 	sb.WriteString(line(""))
 	sb.WriteString(line(" " + brandStyle.Render("Instamart") + creamStyle.Render(" — Groceries and daily essentials in minutes.")))
+	if m.status != "" {
+		sb.WriteString(line(" " + successStyle.Render("✓ "+m.status)))
+	}
 	sb.WriteString(line(""))
 	sb.WriteString(line(" " + brandStyle.Render("Address:") + " " + boldStyle.Render(m.addressLabel) + creamStyle.Render(" — "+m.addressLine)))
 	sb.WriteString(line(" " + brandStyle.Render("Cart:") + " " + creamStyle.Render(fmt.Sprintf("%d items", m.cartCount))))
@@ -125,6 +132,7 @@ func (v InstamartView) Render(ctx context.Context, w io.Writer) error {
 		addressLabel: v.AddressLabel,
 		addressLine:  v.AddressLine,
 		cartCount:    v.CartItemCount,
+		status:       v.StatusMessage,
 	}
 	p := tea.NewProgram(m,
 		tea.WithOutput(w),

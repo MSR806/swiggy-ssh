@@ -241,7 +241,7 @@ func TestInstamartViewRendersAddress(t *testing.T) {
 func TestInstamartPlaceholderViewDelegates(t *testing.T) {
 	ctx, cancel := renderCtx()
 	defer cancel()
-	v := tui.InstamartPlaceholderView{UserID: "user-1"}
+	v := tui.InstamartPlaceholderView{UserID: "user-1", StatusMessage: "Guest session connected"}
 	var buf bytes.Buffer
 	_ = v.Render(ctx, &buf)
 	out := buf.String()
@@ -250,6 +250,7 @@ func TestInstamartPlaceholderViewDelegates(t *testing.T) {
 		"Instamart",
 		"Search products",
 		"Home", // default address label
+		"Guest session connected",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in InstamartPlaceholderView output", want)

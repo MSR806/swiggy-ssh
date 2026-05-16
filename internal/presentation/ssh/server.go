@@ -206,6 +206,11 @@ func (s *SSHServer) handleConn(ctx context.Context, netConn net.Conn, serverConf
 					"remote_addr", sshConn.RemoteAddr().String(),
 					"pubkey_fingerprint", fingerprint,
 				)
+			} else if errors.Is(resolveErr, identity.ErrSSHIdentityRevoked) {
+				s.logger.InfoContext(ctx, "ssh identity revoked; starting guest session",
+					"remote_addr", sshConn.RemoteAddr().String(),
+					"pubkey_fingerprint", fingerprint,
+				)
 			} else if resolveErr != nil {
 				s.logger.WarnContext(ctx, "ssh identity resolution failed",
 					"remote_addr", sshConn.RemoteAddr().String(),
@@ -454,8 +459,7 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 
 	// Login confirmed — check/establish account.
 	if resolvedUserID == "" {
-		render(ctx, tui.LoginSuccessView{DisplayName: "Guest session"})
-		render(ctx, tui.InstamartPlaceholderView{In: ch})
+		render(ctx, tui.InstamartPlaceholderView{StatusMessage: "Guest session connected for this SSH session.", In: ch})
 		return
 	}
 	if s.authUseCase == nil {
