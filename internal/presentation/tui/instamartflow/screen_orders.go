@@ -23,7 +23,7 @@ func (m instamartModel) renderOrders(sb *strings.Builder) {
 			sb.WriteString(line("   " + label))
 		}
 	}
-	if len(m.orders.Orders) > 0 && m.orders.Orders[0].Location == nil {
+	if m.cursor >= 0 && m.cursor < len(m.orders.Orders) && m.orders.Orders[m.cursor].Location == nil {
 		sb.WriteString(line(""))
 		sb.WriteString(line(" Tracking is unavailable for this order in the terminal. Please check the Swiggy Instamart app."))
 	}
