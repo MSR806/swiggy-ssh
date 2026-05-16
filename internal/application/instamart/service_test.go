@@ -284,6 +284,27 @@ func TestCheckoutRejectsAddressIDMismatchAfterReview(t *testing.T) {
 	}
 }
 
+func TestCheckoutAllowsFreshCartWithoutAddressID(t *testing.T) {
+	cart := validCart()
+	cart.AddressID = ""
+	provider := &fakeProvider{cart: cart, checkoutResult: domaininstamart.CheckoutResult{Status: "CONFIRMED"}}
+	service := NewService(provider)
+	review := validReview()
+
+	_, err := service.Checkout(context.Background(), CheckoutInput{
+		AddressID:     "address-1",
+		PaymentMethod: "Cash",
+		Confirmed:     true,
+		ReviewedCart:  &review,
+	})
+	if err != nil {
+		t.Fatalf("checkout should tolerate missing fresh cart address ID: %v", err)
+	}
+	if !reflect.DeepEqual(provider.calls, []string{"get_cart", "checkout"}) {
+		t.Fatalf("expected checkout after fresh cart, got %v", provider.calls)
+	}
+}
+
 func TestCheckoutComparesReviewedTotalToEffectiveFreshTotal(t *testing.T) {
 	cart := validCart()
 	cart.Bill.ToPayRupees = 0

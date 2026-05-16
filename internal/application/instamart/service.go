@@ -219,7 +219,8 @@ func reviewedCartStillMatches(review domaininstamart.CartReviewSnapshot, cart do
 	if reviewAddressID != strings.TrimSpace(checkoutAddressID) {
 		return false
 	}
-	if reviewAddressID != strings.TrimSpace(cart.AddressID) {
+	freshAddressID := strings.TrimSpace(cart.AddressID)
+	if freshAddressID != "" && reviewAddressID != freshAddressID {
 		return false
 	}
 	if strings.TrimSpace(review.PaymentMethod) != strings.TrimSpace(paymentMethod) {
