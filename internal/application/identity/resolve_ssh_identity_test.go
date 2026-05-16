@@ -159,3 +159,35 @@ func TestResolveSSHIdentityMissingKeyRejected(t *testing.T) {
 		t.Fatalf("expected ErrMissingSSHPublicKey, got %v", err)
 	}
 }
+
+func TestRegisterSSHIdentityCreatesDurableUserAndReconnectResolvesSameUser(t *testing.T) {
+	repo := newTestRepo()
+	registerUseCase := NewRegisterSSHIdentityUseCase(repo)
+	resolveUseCase := NewResolveSSHIdentityUseCase(repo)
+	fixedNow := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	registerUseCase.now = func() time.Time { return fixedNow }
+	resolveUseCase.now = func() time.Time { return fixedNow.Add(time.Minute) }
+	key := newSSHPublicKey(t)
+
+	registered, err := registerUseCase.Execute(context.Background(), RegisterSSHIdentityInput{Client: ClientProtocolSSH, Key: key})
+	if err != nil {
+		t.Fatalf("register key: %v", err)
+	}
+	if registered.User.ID == "" {
+		t.Fatal("expected durable user id")
+	}
+	if registered.SSHIdentity.UserID != registered.User.ID {
+		t.Fatalf("expected ssh identity linked to user %s, got %s", registered.User.ID, registered.SSHIdentity.UserID)
+	}
+
+	reconnected, err := resolveUseCase.Execute(context.Background(), ResolveSSHIdentityInput{Client: ClientProtocolSSH, Key: key})
+	if err != nil {
+		t.Fatalf("resolve reconnected key: %v", err)
+	}
+	if reconnected.User.ID != registered.User.ID {
+		t.Fatalf("expected same user %s on reconnect, got %s", registered.User.ID, reconnected.User.ID)
+	}
+	if len(repo.userByID) != 1 {
+		t.Fatalf("expected one durable user, got %d", len(repo.userByID))
+	}
+}

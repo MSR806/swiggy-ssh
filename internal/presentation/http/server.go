@@ -12,14 +12,18 @@ import (
 
 // Server is the HTTP delivery adapter for browser-facing login flows.
 type Server struct {
-	addr   string
-	logger *slog.Logger
-	svc    auth.LoginCodeService
+	addr          string
+	logger        *slog.Logger
+	svc           auth.BrowserAuthAttemptService
+	auth          *auth.CompleteBrowserAuthUseCase
+	startAuth     *auth.StartBrowserAuthUseCase
+	publicBaseURL string
+	provider      string
 }
 
 // New constructs an HTTP server bound to addr, backed by svc.
-func New(addr string, logger *slog.Logger, svc auth.LoginCodeService) *Server {
-	return &Server{addr: addr, logger: logger, svc: svc}
+func New(addr string, logger *slog.Logger, svc auth.BrowserAuthAttemptService, browserAuth *auth.CompleteBrowserAuthUseCase, startAuth *auth.StartBrowserAuthUseCase, publicBaseURL, provider string) *Server {
+	return &Server{addr: addr, logger: logger, svc: svc, auth: browserAuth, startAuth: startAuth, publicBaseURL: publicBaseURL, provider: provider}
 }
 
 // Start listens on s.addr and blocks until ctx is cancelled or a listen error occurs.
@@ -27,6 +31,8 @@ func New(addr string, logger *slog.Logger, svc auth.LoginCodeService) *Server {
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /auth/start", s.handleAuthStart)
+	mux.HandleFunc("GET /auth/callback", s.handleAuthCallback)
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.handleLoginPost)
 

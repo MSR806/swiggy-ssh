@@ -127,5 +127,8 @@ func TestLoginCodeRawNeverEqualsHash(t *testing.T) {
 		if record.CodeHash == "" {
 			t.Fatalf("iteration %d: code hash is empty", i)
 		}
+		if record.CodeVerifier == "" {
+			t.Fatalf("iteration %d: code verifier is empty", i)
+		}
 	}
 }

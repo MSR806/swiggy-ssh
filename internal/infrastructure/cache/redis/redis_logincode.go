@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,19 +15,21 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisLoginCodeService implements auth.LoginCodeService backed by Redis.
-// Keys: "logincode:<sha256-hex-of-raw-code>"
-// Value: JSON-encoded loginCodeRecord
-// TTL: set on IssueLoginCode; key eviction = expiry.
+// RedisLoginCodeService implements auth browser-attempt services backed by Redis.
+// Keys: "authattempt:<sha256-hex-of-raw-token>"
+// Value: JSON-encoded authAttemptRecord
+// TTL: set on IssueAuthAttempt; key eviction = expiry.
 type RedisLoginCodeService struct {
 	client *redis.Client
 	ttl    time.Duration
 	now    func() time.Time
 }
 
-// loginCodeRecord is what is stored in Redis (never contains raw code).
-type loginCodeRecord struct {
-	CodeHash          string    `json:"code_hash"`
+// authAttemptRecord is what is stored in Redis (never contains raw token).
+type authAttemptRecord struct {
+	TokenHash         string    `json:"token_hash"`
+	CodeHash          string    `json:"code_hash,omitempty"`
+	CodeVerifier      string    `json:"code_verifier,omitempty"`
 	UserID            string    `json:"user_id"`
 	TerminalSessionID string    `json:"terminal_session_id"`
 	Status            string    `json:"status"`
@@ -42,92 +45,112 @@ func NewRedisLoginCodeService(client *redis.Client, ttl time.Duration) *RedisLog
 	}
 }
 
-// hashCode returns the SHA-256 hex digest of the raw code.
-// Raw code is never stored — only this digest is persisted.
-func hashCode(rawCode string) string {
-	h := sha256.Sum256([]byte(rawCode))
+// hashToken returns the SHA-256 hex digest of the raw attempt token.
+// Raw tokens are never stored — only this digest is persisted.
+func hashToken(rawToken string) string {
+	h := sha256.Sum256([]byte(rawToken))
 	return hex.EncodeToString(h[:])
 }
 
-// redisKey returns the Redis key for a given raw code.
-func redisKey(rawCode string) string {
-	return "logincode:" + hashCode(rawCode)
+// redisKey returns the Redis key for a given raw attempt token.
+func redisKey(rawToken string) string {
+	return "authattempt:" + hashToken(rawToken)
 }
 
-// generateRawCode produces a human-readable 8-character alphanumeric code
-// formatted as XXXX-XXXX (e.g. "XK7M-P2NQ").
-func generateRawCode() (string, error) {
-	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no O/0/I/1 to avoid confusion
-	b := make([]byte, 8)
+// generateRawAttemptToken produces a high-entropy opaque URL token.
+func generateRawAttemptToken() (string, error) {
+	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generate random bytes: %w", err)
 	}
-	out := make([]byte, 8)
-	for i, v := range b {
-		out[i] = alphabet[int(v)%len(alphabet)]
-	}
-	return string(out[:4]) + "-" + string(out[4:]), nil
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-func (s *RedisLoginCodeService) IssueLoginCode(ctx context.Context, userID, terminalSessionID string) (string, auth.LoginCode, error) {
-	rawCode, err := generateRawCode()
+func (s *RedisLoginCodeService) IssueAuthAttempt(ctx context.Context, userID, terminalSessionID string) (string, auth.BrowserAuthAttempt, error) {
+	rawToken, err := generateRawAttemptToken()
 	if err != nil {
-		return "", auth.LoginCode{}, err
+		return "", auth.BrowserAuthAttempt{}, err
+	}
+	codeVerifier, err := generateRawAttemptToken()
+	if err != nil {
+		return "", auth.BrowserAuthAttempt{}, err
 	}
 
 	now := s.now()
-	record := loginCodeRecord{
-		CodeHash:          hashCode(rawCode),
+	tokenHash := hashToken(rawToken)
+	record := authAttemptRecord{
+		TokenHash:         tokenHash,
+		CodeHash:          tokenHash,
+		CodeVerifier:      codeVerifier,
 		UserID:            userID,
 		TerminalSessionID: terminalSessionID,
-		Status:            auth.LoginCodeStatusPending,
+		Status:            auth.AuthAttemptStatusPending,
 		ExpiresAt:         now.Add(s.ttl),
 		CreatedAt:         now,
 	}
 
 	data, err := json.Marshal(record)
 	if err != nil {
-		return "", auth.LoginCode{}, fmt.Errorf("marshal login code: %w", err)
+		return "", auth.BrowserAuthAttempt{}, fmt.Errorf("marshal auth attempt: %w", err)
 	}
 
-	key := redisKey(rawCode)
+	key := redisKey(rawToken)
 	if err := s.client.Set(ctx, key, data, s.ttl).Err(); err != nil {
-		return "", auth.LoginCode{}, fmt.Errorf("store login code: %w", err)
+		return "", auth.BrowserAuthAttempt{}, fmt.Errorf("store auth attempt: %w", err)
 	}
 
-	return rawCode, toLoginCode(record), nil
+	return rawToken, toAuthAttempt(record), nil
 }
 
-func (s *RedisLoginCodeService) GetLoginCode(ctx context.Context, rawCode string) (auth.LoginCode, error) {
-	record, err := s.loadRecord(ctx, rawCode)
+func (s *RedisLoginCodeService) GetAuthAttempt(ctx context.Context, rawToken string) (auth.BrowserAuthAttempt, error) {
+	record, err := s.loadRecord(ctx, rawToken)
 	if err != nil {
-		return auth.LoginCode{}, err
+		return auth.BrowserAuthAttempt{}, err
 	}
-	return toLoginCode(record), nil
+	return toAuthAttempt(record), nil
 }
 
-func (s *RedisLoginCodeService) CompleteLoginCode(ctx context.Context, rawCode string) error {
-	return s.transition(ctx, rawCode, auth.LoginCodeStatusPending, auth.LoginCodeStatusCompleted)
+func (s *RedisLoginCodeService) CompleteAuthAttempt(ctx context.Context, rawToken string) error {
+	return s.transition(ctx, rawToken, auth.AuthAttemptStatusPending, auth.AuthAttemptStatusCompleted)
 }
 
-func (s *RedisLoginCodeService) CancelLoginCode(ctx context.Context, rawCode string) error {
-	return s.transition(ctx, rawCode, auth.LoginCodeStatusPending, auth.LoginCodeStatusCancelled)
+func (s *RedisLoginCodeService) CompleteClaimedAuthAttempt(ctx context.Context, rawToken string) error {
+	return s.transition(ctx, rawToken, auth.AuthAttemptStatusClaimed, auth.AuthAttemptStatusCompleted)
 }
 
-// loadRecord fetches and unmarshals the record for rawCode.
-func (s *RedisLoginCodeService) loadRecord(ctx context.Context, rawCode string) (loginCodeRecord, error) {
-	key := redisKey(rawCode)
+func (s *RedisLoginCodeService) CancelClaimedAuthAttempt(ctx context.Context, rawToken string) error {
+	return s.transition(ctx, rawToken, auth.AuthAttemptStatusClaimed, auth.AuthAttemptStatusCancelled)
+}
+
+func (s *RedisLoginCodeService) ClaimAuthAttempt(ctx context.Context, rawToken string) (auth.BrowserAuthAttempt, error) {
+	record, err := s.claim(ctx, rawToken)
+	if err != nil {
+		return auth.BrowserAuthAttempt{}, err
+	}
+	return toAuthAttempt(record), nil
+}
+
+func (s *RedisLoginCodeService) CancelAuthAttempt(ctx context.Context, rawToken string) error {
+	return s.transition(ctx, rawToken, auth.AuthAttemptStatusPending, auth.AuthAttemptStatusCancelled)
+}
+
+// loadRecord fetches and unmarshals the record for rawToken.
+func (s *RedisLoginCodeService) loadRecord(ctx context.Context, rawToken string) (authAttemptRecord, error) {
+	key := redisKey(rawToken)
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
-			return loginCodeRecord{}, auth.ErrLoginCodeNotFound
+			return authAttemptRecord{}, auth.ErrAuthAttemptNotFound
 		}
-		return loginCodeRecord{}, fmt.Errorf("get login code: %w", err)
+		return authAttemptRecord{}, fmt.Errorf("get auth attempt: %w", err)
 	}
 
-	var record loginCodeRecord
+	var record authAttemptRecord
 	if err := json.Unmarshal(data, &record); err != nil {
-		return loginCodeRecord{}, fmt.Errorf("unmarshal login code: %w", err)
+		return authAttemptRecord{}, fmt.Errorf("unmarshal auth attempt: %w", err)
+	}
+	if record.TokenHash == "" {
+		record.TokenHash = record.CodeHash
 	}
 	return record, nil
 }
@@ -161,26 +184,102 @@ return 1
 	key := redisKey(rawCode)
 	result, err := s.client.Eval(ctx, luaScript, []string{key}, fromStatus, toStatus).Int()
 	if err != nil {
-		return fmt.Errorf("transition login code: %w", err)
+		return fmt.Errorf("transition auth attempt: %w", err)
 	}
 	switch result {
 	case 0:
-		return auth.ErrLoginCodeNotFound
+		return auth.ErrAuthAttemptNotFound
 	case 2:
-		return auth.ErrLoginCodeAlreadyUsed
+		return auth.ErrAuthAttemptAlreadyUsed
 	}
 	return nil
 }
 
-func toLoginCode(r loginCodeRecord) auth.LoginCode {
-	return auth.LoginCode{
-		CodeHash:          r.CodeHash,
+func (s *RedisLoginCodeService) claim(ctx context.Context, rawToken string) (authAttemptRecord, error) {
+	const luaScript = `
+local data = redis.call('GET', KEYS[1])
+if not data then return {0} end
+local rec = cjson.decode(data)
+if rec.status ~= ARGV[1] then return {2} end
+rec.status = ARGV[2]
+local pttl = redis.call('PTTL', KEYS[1])
+if pttl > 0 then
+  redis.call('SET', KEYS[1], cjson.encode(rec), 'PX', pttl)
+elseif pttl == -1 then
+  redis.call('SET', KEYS[1], cjson.encode(rec))
+else
+  return {0}
+end
+return {1, cjson.encode(rec)}
+`
+	key := redisKey(rawToken)
+	values, err := s.client.Eval(ctx, luaScript, []string{key}, auth.AuthAttemptStatusPending, auth.AuthAttemptStatusClaimed).Slice()
+	if err != nil {
+		return authAttemptRecord{}, fmt.Errorf("claim auth attempt: %w", err)
+	}
+	code, ok := values[0].(int64)
+	if !ok {
+		return authAttemptRecord{}, fmt.Errorf("claim auth attempt: unexpected redis result")
+	}
+	switch code {
+	case 0:
+		return authAttemptRecord{}, auth.ErrAuthAttemptNotFound
+	case 2:
+		return authAttemptRecord{}, auth.ErrAuthAttemptAlreadyUsed
+	}
+	data, ok := values[1].(string)
+	if !ok {
+		return authAttemptRecord{}, fmt.Errorf("claim auth attempt: missing record")
+	}
+	var record authAttemptRecord
+	if err := json.Unmarshal([]byte(data), &record); err != nil {
+		return authAttemptRecord{}, fmt.Errorf("unmarshal claimed auth attempt: %w", err)
+	}
+	if record.TokenHash == "" {
+		record.TokenHash = record.CodeHash
+	}
+	return record, nil
+}
+
+func toAuthAttempt(r authAttemptRecord) auth.BrowserAuthAttempt {
+	return auth.BrowserAuthAttempt{
+		TokenHash:         r.TokenHash,
+		CodeHash:          r.TokenHash,
+		CodeVerifier:      r.CodeVerifier,
 		UserID:            r.UserID,
 		TerminalSessionID: r.TerminalSessionID,
 		Status:            r.Status,
 		ExpiresAt:         r.ExpiresAt,
 		CreatedAt:         r.CreatedAt,
 	}
+}
+
+func (s *RedisLoginCodeService) IssueLoginCode(ctx context.Context, userID, terminalSessionID string) (string, auth.LoginCode, error) {
+	return s.IssueAuthAttempt(ctx, userID, terminalSessionID)
+}
+
+func (s *RedisLoginCodeService) GetLoginCode(ctx context.Context, rawCode string) (auth.LoginCode, error) {
+	return s.GetAuthAttempt(ctx, rawCode)
+}
+
+func (s *RedisLoginCodeService) CompleteLoginCode(ctx context.Context, rawCode string) error {
+	return s.CompleteAuthAttempt(ctx, rawCode)
+}
+
+func (s *RedisLoginCodeService) ClaimLoginCode(ctx context.Context, rawCode string) (auth.LoginCode, error) {
+	return s.ClaimAuthAttempt(ctx, rawCode)
+}
+
+func (s *RedisLoginCodeService) CompleteClaimedLoginCode(ctx context.Context, rawCode string) error {
+	return s.CompleteClaimedAuthAttempt(ctx, rawCode)
+}
+
+func (s *RedisLoginCodeService) CancelClaimedLoginCode(ctx context.Context, rawCode string) error {
+	return s.CancelClaimedAuthAttempt(ctx, rawCode)
+}
+
+func (s *RedisLoginCodeService) CancelLoginCode(ctx context.Context, rawCode string) error {
+	return s.CancelAuthAttempt(ctx, rawCode)
 }
 
 // Compile-time interface assertion.

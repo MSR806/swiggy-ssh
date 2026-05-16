@@ -58,19 +58,27 @@ func (r *ResolveSSHIdentityUseCase) Execute(ctx context.Context, input ResolveSS
 }
 
 func (r *ResolveSSHIdentityUseCase) resolveExistingSSHIdentity(ctx context.Context, client, fingerprint string, sshIdentity SSHIdentity, resolvedAt time.Time) (SessionIdentity, error) {
+	return resolveExistingSSHIdentity(ctx, r.repo, client, fingerprint, sshIdentity, resolvedAt)
+}
+
+func (r *RegisterSSHIdentityUseCase) resolveExistingSSHIdentity(ctx context.Context, client, fingerprint string, sshIdentity SSHIdentity, resolvedAt time.Time) (SessionIdentity, error) {
+	return resolveExistingSSHIdentity(ctx, r.repo, client, fingerprint, sshIdentity, resolvedAt)
+}
+
+func resolveExistingSSHIdentity(ctx context.Context, repo Repository, client, fingerprint string, sshIdentity SSHIdentity, resolvedAt time.Time) (SessionIdentity, error) {
 	if sshIdentity.RevokedAt != nil {
 		return SessionIdentity{}, ErrSSHIdentityRevoked
 	}
 
-	if err := r.repo.UpdateSSHIdentityLastSeen(ctx, fingerprint, resolvedAt); err != nil {
+	if err := repo.UpdateSSHIdentityLastSeen(ctx, fingerprint, resolvedAt); err != nil {
 		return SessionIdentity{}, err
 	}
 
-	if err := r.repo.UpdateUserLastSeen(ctx, sshIdentity.UserID, resolvedAt); err != nil {
+	if err := repo.UpdateUserLastSeen(ctx, sshIdentity.UserID, resolvedAt); err != nil {
 		return SessionIdentity{}, err
 	}
 
-	user, err := r.repo.FindUserByID(ctx, sshIdentity.UserID)
+	user, err := repo.FindUserByID(ctx, sshIdentity.UserID)
 	if err != nil {
 		return SessionIdentity{}, err
 	}

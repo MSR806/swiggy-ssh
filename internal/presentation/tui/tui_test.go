@@ -3,6 +3,7 @@ package tui_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -92,9 +93,9 @@ func TestInstamartPlaceholderViewUsesInput(t *testing.T) {
 
 // --- LoginWaitingView ---
 
-func TestLoginWaitingViewRendersCodeBox(t *testing.T) {
+func TestLoginWaitingViewRendersDirectURL(t *testing.T) {
 	// LoginWaitingView is static — Init returns tea.Quit immediately.
-	v := tui.LoginWaitingView{LoginURL: "http://localhost:8080/login", RawCode: "ABCD-1234"}
+	v := tui.LoginWaitingView{LoginURL: "http://localhost:8080/auth/start?attempt=opaque"}
 	var buf bytes.Buffer
 	if err := v.Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
@@ -102,10 +103,9 @@ func TestLoginWaitingViewRendersCodeBox(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		"http://localhost:8080/login",
-		"ABCD-1234",
-		"┌────────────────────┐", // code box top border
-		"Waiting for login",
+		"http://localhost:8080/auth/start?attempt=opaque",
+		"one-time link",
+		"Waiting for browser login",
 		"not connected",
 	} {
 		if !strings.Contains(out, want) {
@@ -114,14 +114,66 @@ func TestLoginWaitingViewRendersCodeBox(t *testing.T) {
 	}
 }
 
-func TestLoginWaitingViewCodeAppearsOnce(t *testing.T) {
-	v := tui.LoginWaitingView{LoginURL: "http://localhost:8080/login", RawCode: "XXXX-9999"}
+func TestLoginWaitingViewURLAppearsOnce(t *testing.T) {
+	loginURL := "http://localhost:8080/auth/start?attempt=opaque"
+	v := tui.LoginWaitingView{LoginURL: loginURL}
 	var buf bytes.Buffer
 	_ = v.Render(context.Background(), &buf)
 	out := buf.String()
-	count := strings.Count(out, "XXXX-9999")
-	if count != 1 {
-		t.Fatalf("expected code to appear exactly once, got %d times", count)
+	if !strings.Contains(out, "\x1b]8;;"+loginURL) {
+		t.Fatal("expected OSC-8 hyperlink target to include URL")
+	}
+	if !strings.Contains(out, loginURL) {
+		t.Fatal("expected fallback URL to appear")
+	}
+}
+
+func TestLoginWaitingViewWrapsLongURL(t *testing.T) {
+	loginURL := "http://localhost:8080/auth/start?attempt=" + strings.Repeat("abcdef", 18)
+	v := tui.LoginWaitingView{LoginURL: loginURL}
+	var buf bytes.Buffer
+	_ = v.Render(context.Background(), &buf)
+	out := buf.String()
+	if !strings.Contains(out, loginURL[:70]) || !strings.Contains(out, loginURL[70:]) {
+		t.Fatal("expected long URL to be wrapped instead of clipped")
+	}
+}
+
+func TestLoginWaitingViewCopyKeyEmitsOSC52WhenInteractive(t *testing.T) {
+	ctx, cancel := renderCtx()
+	defer cancel()
+	loginURL := "http://localhost:8080/auth/start?attempt=opaque"
+	v := tui.LoginWaitingView{LoginURL: loginURL, In: strings.NewReader("c")}
+	var buf bytes.Buffer
+	if err := v.Render(ctx, &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := buf.String()
+	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(loginURL))
+	if !strings.Contains(out, want) {
+		t.Fatal("expected c key to emit OSC-52 clipboard sequence")
+	}
+	if !strings.Contains(out, "copy attempted") {
+		t.Fatal("expected visible copy attempted status")
+	}
+}
+
+func TestLoginWaitingViewInteractiveFooterShowsCopyAndClickHints(t *testing.T) {
+	ctx, cancel := renderCtx()
+	defer cancel()
+	v := tui.LoginWaitingView{
+		LoginURL: "http://localhost:8080/auth/start?attempt=opaque",
+		In:       strings.NewReader(""),
+	}
+	var buf bytes.Buffer
+	if err := v.Render(ctx, &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"c copy URL", "click Open Swiggy login"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected footer hint %q", want)
+		}
 	}
 }
 
@@ -299,19 +351,19 @@ func TestRevokedViewRenders(t *testing.T) {
 
 // --- ReconnectView ---
 
-func TestReconnectViewRendersCode(t *testing.T) {
+func TestReconnectViewRendersDirectURL(t *testing.T) {
 	// ReconnectView is inline plain text — no tea.Program.
-	v := tui.ReconnectView{RawCode: "RECO-AUTH"}
+	loginURL := "http://localhost:8080/auth/start?attempt=reco"
+	v := tui.ReconnectView{LoginURL: loginURL}
 	var buf bytes.Buffer
 	if err := v.Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "RECO-AUTH") {
-		t.Fatal("expected code in reconnect view output")
+	if !strings.Contains(out, loginURL) {
+		t.Fatal("expected URL in reconnect view output")
 	}
-	// code should appear exactly once
-	if strings.Count(out, "RECO-AUTH") != 1 {
-		t.Fatalf("expected code to appear exactly once, got %d", strings.Count(out, "RECO-AUTH"))
+	if !strings.Contains(out, "\x1b]8;;"+loginURL) {
+		t.Fatal("expected OSC-8 hyperlink target to include URL")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -25,15 +26,16 @@ type Server interface {
 
 // SSHServer handles SSH listener and session mechanics.
 type SSHServer struct {
-	addr          string
-	hostKeyPath   string
-	logger        *slog.Logger
-	resolver      *identity.ResolveSSHIdentityUseCase
-	startSession  *identity.StartTerminalSessionUseCase
-	endSession    *identity.EndTerminalSessionUseCase
-	loginCodeSvc  auth.LoginCodeService
-	publicBaseURL string
-	authUseCase   *auth.EnsureValidAccountUseCase
+	addr           string
+	hostKeyPath    string
+	logger         *slog.Logger
+	resolver       *identity.ResolveSSHIdentityUseCase
+	registrar      *identity.RegisterSSHIdentityUseCase
+	startSession   *identity.StartTerminalSessionUseCase
+	endSession     *identity.EndTerminalSessionUseCase
+	authAttemptSvc auth.BrowserAuthAttemptService
+	publicBaseURL  string
+	authUseCase    *auth.EnsureValidAccountUseCase
 }
 
 type activeConnTracker struct {
@@ -77,17 +79,18 @@ func (t *activeConnTracker) closeAll() {
 	}
 }
 
-func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.ResolveSSHIdentityUseCase, startSession *identity.StartTerminalSessionUseCase, endSession *identity.EndTerminalSessionUseCase, loginCodeSvc auth.LoginCodeService, publicBaseURL string, authUseCase *auth.EnsureValidAccountUseCase) *SSHServer {
+func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.ResolveSSHIdentityUseCase, registrar *identity.RegisterSSHIdentityUseCase, startSession *identity.StartTerminalSessionUseCase, endSession *identity.EndTerminalSessionUseCase, authAttemptSvc auth.BrowserAuthAttemptService, publicBaseURL string, authUseCase *auth.EnsureValidAccountUseCase) *SSHServer {
 	return &SSHServer{
-		addr:          addr,
-		hostKeyPath:   hostKeyPath,
-		logger:        logger,
-		resolver:      resolver,
-		startSession:  startSession,
-		endSession:    endSession,
-		loginCodeSvc:  loginCodeSvc,
-		publicBaseURL: publicBaseURL,
-		authUseCase:   authUseCase,
+		addr:           addr,
+		hostKeyPath:    hostKeyPath,
+		logger:         logger,
+		resolver:       resolver,
+		registrar:      registrar,
+		startSession:   startSession,
+		endSession:     endSession,
+		authAttemptSvc: authAttemptSvc,
+		publicBaseURL:  publicBaseURL,
+		authUseCase:    authUseCase,
 	}
 }
 
@@ -280,11 +283,11 @@ func (s *SSHServer) handleConn(ctx context.Context, netConn net.Conn, serverConf
 			continue
 		}
 
-		go s.handleSessionChannel(ctx, sshConn, channel, requests, terminalSessionID, fingerprint, pubKeyType, resolvedUserID)
+		go s.handleSessionChannel(ctx, sshConn, channel, requests, terminalSessionID, fingerprint, pubKeyType, publicKeyAuthorized, resolvedUserID)
 	}
 }
 
-func (s *SSHServer) handleSessionChannel(ctx context.Context, conn *ssh.ServerConn, ch ssh.Channel, reqs <-chan *ssh.Request, terminalSessionID, fingerprint, pubKeyType, resolvedUserID string) {
+func (s *SSHServer) handleSessionChannel(ctx context.Context, conn *ssh.ServerConn, ch ssh.Channel, reqs <-chan *ssh.Request, terminalSessionID, fingerprint, pubKeyType, publicKeyAuthorized, resolvedUserID string) {
 	defer ch.Close()
 
 	started := false
@@ -323,7 +326,7 @@ func (s *SSHServer) handleSessionChannel(ctx context.Context, conn *ssh.ServerCo
 		fingerprint,
 	)
 
-	s.runSession(tui.WithViewport(ctx, viewport), ch, fallbackMsg, terminalSessionID, fingerprint, resolvedUserID)
+	s.runSession(tui.WithViewport(ctx, viewport), ch, fallbackMsg, terminalSessionID, fingerprint, publicKeyAuthorized, resolvedUserID)
 
 	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 0}))
 
@@ -392,8 +395,8 @@ func discardSessionRequests(reqs <-chan *ssh.Request) {
 
 // runSession drives the screen routing logic for an established SSH session channel.
 // It is called after the request loop confirms a shell/exec was started.
-func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg, terminalSessionID, fingerprint, resolvedUserID string) {
-	if s.loginCodeSvc == nil || terminalSessionID == "" {
+func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg, terminalSessionID, fingerprint, publicKeyAuthorized, resolvedUserID string) {
+	if s.authAttemptSvc == nil || terminalSessionID == "" {
 		_, _ = io.WriteString(ch, fallbackMsg)
 		_, _ = io.WriteString(ch, "Session handler placeholder complete. Goodbye.\n")
 		return
@@ -436,18 +439,34 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 		// expired/reconnect_required/not-found — fall through to login flow.
 	}
 
-	// LOGIN CODE FLOW
-	rawCode, _, issueErr := s.loginCodeSvc.IssueLoginCode(ctx, resolvedUserID, terminalSessionID)
-	if issueErr != nil {
-		s.logger.WarnContext(ctx, "failed to issue login code", "error", issueErr)
+	// BROWSER AUTH ATTEMPT FLOW
+	durableUserID, identityErr := s.ensureDurableUserForBrowserAuth(ctx, resolvedUserID, publicKeyAuthorized)
+	if identityErr != nil {
+		s.logger.WarnContext(ctx, "failed to establish durable ssh identity", "error", identityErr, "pubkey_fingerprint", fingerprint)
+		if errors.Is(identityErr, auth.ErrOAuthAccountUserRequired) || errors.Is(identityErr, identity.ErrMissingSSHPublicKey) {
+			render(ctx, tui.ErrorView{Message: "Browser login needs an SSH public key. Reconnect with an SSH key and try again."})
+			return
+		}
 		render(ctx, tui.ErrorView{Message: "Login unavailable. Please try again later."})
 		return
 	}
+	resolvedUserID = durableUserID
 
-	loginURL := s.publicBaseURL + "/login"
-	render(ctx, tui.LoginWaitingView{LoginURL: loginURL, RawCode: rawCode})
-
-	completed, pollErr := pollLoginCode(ctx, s.loginCodeSvc, rawCode, s.logger)
+	authRequired, issueErr := s.beginBrowserAuth(ctx, resolvedUserID, terminalSessionID)
+	if issueErr != nil {
+		s.logger.WarnContext(ctx, "failed to issue auth attempt", "error", issueErr)
+		if errors.Is(issueErr, auth.ErrOAuthAccountUserRequired) {
+			render(ctx, tui.ErrorView{Message: "Browser login needs an SSH public key. Reconnect with an SSH key and try again."})
+			return
+		}
+		render(ctx, tui.ErrorView{Message: "Login unavailable. Please try again later."})
+		return
+	}
+	if !authRequired.AuthRequired {
+		render(ctx, tui.ErrorView{Message: "Login unavailable. Please try again later."})
+		return
+	}
+	completed, pollErr := s.renderLoginWaitingAndPoll(ctx, ch, authRequired.LoginURL, authRequired.AuthAttemptToken)
 	if pollErr != nil {
 		render(ctx, tui.ErrorView{Message: "Login polling error. Session ending."})
 		return
@@ -468,17 +487,17 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 	}
 
 	reauthFn := func(reauthCtx context.Context) error {
-		newCode, _, reauthIssueErr := s.loginCodeSvc.IssueLoginCode(reauthCtx, resolvedUserID, terminalSessionID)
+		newAttempt, _, reauthIssueErr := s.authAttemptSvc.IssueAuthAttempt(reauthCtx, resolvedUserID, terminalSessionID)
 		if reauthIssueErr != nil {
-			return fmt.Errorf("issue reauth login code: %w", reauthIssueErr)
+			return fmt.Errorf("issue reauth auth attempt: %w", reauthIssueErr)
 		}
-		render(reauthCtx, tui.ReconnectView{RawCode: newCode})
-		reauthCompleted, reauthPollErr := pollLoginCode(reauthCtx, s.loginCodeSvc, newCode, s.logger)
+		render(reauthCtx, tui.ReconnectView{LoginURL: authStartURL(s.publicBaseURL, newAttempt)})
+		reauthCompleted, reauthPollErr := pollAuthAttempt(reauthCtx, s.authAttemptSvc, newAttempt, s.logger)
 		if reauthPollErr != nil {
 			return fmt.Errorf("poll reauth: %w", reauthPollErr)
 		}
 		if !reauthCompleted {
-			return errors.New("reauth login code expired or cancelled")
+			return errors.New("reauth attempt expired or cancelled")
 		}
 		return nil
 	}
@@ -504,10 +523,83 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 	}
 }
 
-// pollLoginCode polls svc every 2 s until the code leaves the pending state.
+func (s *SSHServer) renderLoginWaitingAndPoll(ctx context.Context, ch ssh.Channel, loginURL, rawAttempt string) (bool, error) {
+	renderCtx, cancelRender := context.WithCancel(ctx)
+	renderDone := make(chan error, 1)
+	go func() {
+		_ = tui.ClearScreen(ch)
+		renderDone <- (tui.LoginWaitingView{LoginURL: loginURL, In: ch}).Render(renderCtx, ch)
+	}()
+
+	completed, pollErr := pollAuthAttempt(ctx, s.authAttemptSvc, rawAttempt, s.logger)
+	cancelRender()
+
+	select {
+	case renderErr := <-renderDone:
+		if renderErr != nil {
+			s.logger.WarnContext(ctx, "login waiting render failed", "error", renderErr)
+		}
+	case <-time.After(200 * time.Millisecond):
+		// Do not hold auth completion on terminal input cleanup; the SSH channel
+		// will be closed when the session ends if the renderer is still unwinding.
+	}
+
+	return completed, pollErr
+}
+
+func authStartURL(publicBaseURL, rawAttempt string) string {
+	return publicBaseURL + "/auth/start?attempt=" + url.QueryEscape(rawAttempt)
+}
+
+func (s *SSHServer) ensureDurableUserForBrowserAuth(ctx context.Context, resolvedUserID, publicKeyAuthorized string) (string, error) {
+	if resolvedUserID != "" {
+		return resolvedUserID, nil
+	}
+	if publicKeyAuthorized == "" || s.registrar == nil {
+		return "", auth.ErrOAuthAccountUserRequired
+	}
+	publicKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(publicKeyAuthorized))
+	if err != nil {
+		return "", err
+	}
+	registered, err := s.registrar.Execute(ctx, identity.RegisterSSHIdentityInput{
+		Client: identity.ClientProtocolSSH,
+		Key:    publicKey,
+	})
+	if err != nil {
+		return "", err
+	}
+	return registered.User.ID, nil
+}
+
+func (s *SSHServer) beginBrowserAuth(ctx context.Context, userID, terminalSessionID string) (auth.EnsureValidAccountOutput, error) {
+	if userID == "" {
+		return auth.EnsureValidAccountOutput{}, auth.ErrOAuthAccountUserRequired
+	}
+	if s.authUseCase != nil {
+		return s.authUseCase.Execute(ctx, auth.EnsureValidAccountInput{
+			UserID:             userID,
+			AllowFirstAuth:     true,
+			AuthAttemptService: s.authAttemptSvc,
+			TerminalSessionID:  terminalSessionID,
+			PublicBaseURL:      s.publicBaseURL,
+		})
+	}
+	rawAttempt, _, err := s.authAttemptSvc.IssueAuthAttempt(ctx, userID, terminalSessionID)
+	if err != nil {
+		return auth.EnsureValidAccountOutput{}, err
+	}
+	return auth.EnsureValidAccountOutput{
+		AuthRequired:     true,
+		LoginURL:         authStartURL(s.publicBaseURL, rawAttempt),
+		AuthAttemptToken: rawAttempt,
+	}, nil
+}
+
+// pollAuthAttempt polls svc every 2 s until the attempt leaves the pending state.
 // Returns (true, nil) on completion, (false, nil) on expiry/cancellation,
 // (false, err) on unexpected error. Respects ctx cancellation.
-func pollLoginCode(ctx context.Context, svc auth.LoginCodeService, rawCode string, logger *slog.Logger) (completed bool, err error) {
+func pollAuthAttempt(ctx context.Context, svc auth.BrowserAuthAttemptService, rawAttempt string, logger *slog.Logger) (completed bool, err error) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -517,20 +609,20 @@ func pollLoginCode(ctx context.Context, svc auth.LoginCodeService, rawCode strin
 			// caller level — avoids "polling error" message on clean disconnect.
 			return false, nil
 		case <-ticker.C:
-			record, getErr := svc.GetLoginCode(ctx, rawCode)
-			if errors.Is(getErr, auth.ErrLoginCodeNotFound) {
+			record, getErr := svc.GetAuthAttempt(ctx, rawAttempt)
+			if errors.Is(getErr, auth.ErrAuthAttemptNotFound) {
 				return false, nil // expired
 			}
 			if getErr != nil {
-				logger.WarnContext(ctx, "poll login code error", "error", getErr)
+				logger.WarnContext(ctx, "poll auth attempt error", "error", getErr)
 				return false, getErr
 			}
 			switch record.Status {
-			case auth.LoginCodeStatusCompleted:
+			case auth.AuthAttemptStatusCompleted:
 				return true, nil
-			case auth.LoginCodeStatusCancelled:
+			case auth.AuthAttemptStatusCancelled:
 				return false, nil
-				// LoginCodeStatusPending: keep polling
+				// AuthAttemptStatusPending: keep polling
 			}
 		}
 	}

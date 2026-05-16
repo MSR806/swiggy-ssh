@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"swiggy-ssh/internal/application/auth"
@@ -11,6 +12,7 @@ import (
 	cache "swiggy-ssh/internal/infrastructure/cache/redis"
 	"swiggy-ssh/internal/infrastructure/crypto"
 	store "swiggy-ssh/internal/infrastructure/persistence/postgres"
+	"swiggy-ssh/internal/infrastructure/provider/swiggy"
 	"swiggy-ssh/internal/platform/config"
 	"swiggy-ssh/internal/platform/logging"
 	httpserver "swiggy-ssh/internal/presentation/http"
@@ -23,6 +25,10 @@ func main() {
 
 	cfg := config.Load()
 	logger := logging.New(cfg.AppEnv)
+	if err := cfg.Validate(); err != nil {
+		logger.ErrorContext(ctx, "invalid configuration", "error", err)
+		return
+	}
 
 	if cfg.AppEnv == "production" && cfg.TokenEncryptionKey == config.DefaultDevTokenEncryptionKey {
 		logger.ErrorContext(ctx, "TOKEN_ENCRYPTION_KEY must be set in production; refusing to start with the dev default key")
@@ -54,16 +60,25 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	loginCodeSvc := cache.NewRedisLoginCodeService(redisClient, cfg.LoginCodeTTL)
-	logger.InfoContext(ctx, "login code service ready", "ttl", cfg.LoginCodeTTL)
+	authAttemptSvc := cache.NewRedisLoginCodeService(redisClient, cfg.LoginCodeTTL)
+	logger.InfoContext(ctx, "browser auth attempt service ready", "ttl", cfg.LoginCodeTTL)
 
+	swiggyBrowserAuth := swiggy.NewBrowserAuthClient(swiggy.BrowserAuthConfig{
+		AuthorizeURL: cfg.SwiggyAuthAuthorizeURL,
+		TokenURL:     cfg.SwiggyAuthTokenURL,
+		ClientID:     cfg.SwiggyClientID,
+		Scopes:       strings.Fields(strings.ReplaceAll(cfg.SwiggyAuthScopes, ",", " ")),
+	})
 	ensureValidAccount := auth.NewEnsureValidAccountUseCase(postgresStore)
+	completeBrowserAuth := auth.NewCompleteBrowserAuthUseCase(postgresStore, authAttemptSvc, swiggyBrowserAuth)
+	startBrowserAuth := auth.NewStartBrowserAuthUseCase(authAttemptSvc, swiggyBrowserAuth)
 
 	resolveSSHIdentity := identity.NewResolveSSHIdentityUseCase(postgresStore)
+	registerSSHIdentity := identity.NewRegisterSSHIdentityUseCase(postgresStore)
 	startTerminalSession := identity.NewStartTerminalSessionUseCase(postgresStore)
 	endTerminalSession := identity.NewEndTerminalSessionUseCase(postgresStore)
-	server := sshserver.New(cfg.SSHAddr, cfg.SSHHostKeyPath, logger, resolveSSHIdentity, startTerminalSession, endTerminalSession, loginCodeSvc, cfg.PublicBaseURL, ensureValidAccount)
-	httpSrv := httpserver.New(cfg.HTTPAddr, logger, loginCodeSvc)
+	server := sshserver.New(cfg.SSHAddr, cfg.SSHHostKeyPath, logger, resolveSSHIdentity, registerSSHIdentity, startTerminalSession, endTerminalSession, authAttemptSvc, cfg.PublicBaseURL, ensureValidAccount)
+	httpSrv := httpserver.New(cfg.HTTPAddr, logger, authAttemptSvc, completeBrowserAuth, startBrowserAuth, cfg.PublicBaseURL, cfg.SwiggyProvider)
 
 	logger.InfoContext(ctx, "swiggy-ssh scaffold startup",
 		"app_env", cfg.AppEnv,

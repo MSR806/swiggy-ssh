@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"strings"
@@ -11,14 +12,67 @@ import (
 	"swiggy-ssh/internal/application/auth"
 )
 
-// LoginWaitingView renders the "open browser and enter code" prompt.
+// LoginWaitingView renders the direct browser-login prompt.
 type LoginWaitingView struct {
 	LoginURL string
-	RawCode  string
+	In       io.Reader
 }
 
 func (v LoginWaitingView) Render(ctx context.Context, w io.Writer) error {
+	if v.In != nil {
+		p := tea.NewProgram(loginWaitingModel{
+			ctx:      ctx,
+			viewport: viewportFromContext(ctx),
+			loginURL: v.LoginURL,
+		},
+			tea.WithOutput(w),
+			tea.WithInput(v.In),
+			tea.WithoutSignals(),
+		)
+		_, err := p.Run()
+		return err
+	}
+	return runStatic(w, loginWaitingContent(viewportFromContext(ctx), v.LoginURL, "not connected", false, false))
+}
+
+type loginWaitingModel struct {
+	ctx      context.Context
+	viewport Viewport
+	loginURL string
+	copied   bool
+}
+
+func (m loginWaitingModel) Init() tea.Cmd {
+	return ctxQuitCmd(m.ctx)
+}
+
+func (m loginWaitingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "c":
+			m.copied = true
+			return m, nil
+		case "q", "b", "ctrl+c":
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m loginWaitingModel) View() string {
+	status := "not connected"
+	if m.copied {
+		status = "copy attempted"
+	}
+	return loginWaitingContent(m.viewport, m.loginURL, status, true, m.copied)
+}
+
+func loginWaitingContent(viewport Viewport, loginURL, status string, interactive, copied bool) string {
 	var sb strings.Builder
+	if copied {
+		sb.WriteString(osc52(loginURL))
+	}
 	sb.WriteString(top())
 	sb.WriteString(line(" " + brandStyle.Render("swiggy.ssh") + creamStyle.Render(" > Login")))
 	sb.WriteString(divider())
@@ -27,25 +81,29 @@ func (v LoginWaitingView) Render(ctx context.Context, w io.Writer) error {
 	sb.WriteString(line(""))
 	sb.WriteString(line(" " + brandStyle.Render("Open this URL in your browser:")))
 	sb.WriteString(line(""))
-	sb.WriteString(line(" " + accentStyle.Render(v.LoginURL)))
+	sb.WriteString(line(" " + accentStyle.Render(osc8("Open Swiggy login", loginURL))))
 	sb.WriteString(line(""))
-	sb.WriteString(line(" " + brandStyle.Render("Enter code:")))
+	for _, wrapped := range wrapText(loginURL, 70) {
+		sb.WriteString(line(" " + accentStyle.Render(wrapped)))
+	}
 	sb.WriteString(line(""))
-	sb.WriteString(codeBox(v.RawCode))
+	sb.WriteString(line(" " + creamStyle.Render("This one-time link securely connects your browser login to this SSH session.")))
 	sb.WriteString(line(""))
-	sb.WriteString(line(" " + creamStyle.Render("Waiting for login...")))
+	sb.WriteString(line(" " + creamStyle.Render("Waiting for browser login...")))
 	sb.WriteString(line(""))
-	sb.WriteString(line(" " + brandStyle.Render("Status:") + " " + mutedStyle.Render("not connected")))
+	sb.WriteString(line(" " + brandStyle.Render("Status:") + " " + mutedStyle.Render(status)))
 	sb.WriteString(line(""))
 	sb.WriteString(divider())
-	sb.WriteString(footerLine(
-		KeyHint{Key: "r", Label: "refresh"},
-		KeyHint{Key: "c", Label: "copy URL"},
-		KeyHint{Key: "b", Label: "back"},
-		KeyHint{Key: "q", Label: "quit"},
-	))
+	if interactive {
+		sb.WriteString(footerLine(
+			KeyHint{Key: "c", Label: "copy URL"},
+			KeyHint{Key: "click", Label: "Open Swiggy login"},
+		))
+	} else {
+		sb.WriteString(footerLine(KeyHint{Key: "click", Label: "Open Swiggy login"}))
+	}
 	sb.WriteString(bottom())
-	return runStatic(w, centerInViewport(sb.String(), viewportFromContext(ctx)))
+	return centerInViewport(sb.String(), viewport)
 }
 
 // LoginSuccessView renders the post-login confirmation.
@@ -162,20 +220,47 @@ func (v LoginSuccessView) Render(ctx context.Context, w io.Writer) error {
 	return err
 }
 
-// ReconnectView renders the re-auth prompt shown before a new login code.
+// ReconnectView renders the re-auth prompt shown before a new browser auth attempt.
 // Inline (no full-screen box): shown mid-session when re-auth is needed.
 type ReconnectView struct {
-	RawCode string
+	LoginURL string
 }
 
 func (v ReconnectView) Render(ctx context.Context, w io.Writer) error {
-	content := "\r\n" +
-		"  " + brandStyle.Render("Your session needs re-authentication.") + "\r\n" +
-		"  " + creamStyle.Render("Enter this code in the browser login page:") + "\r\n" +
-		"\r\n" +
-		"     " + accentStyle.Render(boldStyle.Render(v.RawCode)) + "\r\n" +
-		"\r\n" +
-		"  " + creamStyle.Render("Waiting...") + "\r\n"
-	_, err := fmt.Fprint(w, centerInViewport(content, viewportFromContext(ctx)))
+	var sb strings.Builder
+	sb.WriteString("\r\n")
+	sb.WriteString("  " + brandStyle.Render("Your session needs re-authentication.") + "\r\n")
+	sb.WriteString("  " + creamStyle.Render("Open this one-time browser login URL:") + "\r\n")
+	sb.WriteString("\r\n")
+	sb.WriteString("     " + accentStyle.Render(osc8("Open Swiggy login", v.LoginURL)) + "\r\n")
+	sb.WriteString("\r\n")
+	for _, wrapped := range wrapText(v.LoginURL, 70) {
+		sb.WriteString("     " + accentStyle.Render(boldStyle.Render(wrapped)) + "\r\n")
+	}
+	sb.WriteString("\r\n")
+	sb.WriteString("  " + creamStyle.Render("Waiting...") + "\r\n")
+	_, err := fmt.Fprint(w, centerInViewport(sb.String(), viewportFromContext(ctx)))
 	return err
+}
+
+func wrapText(s string, width int) []string {
+	if s == "" {
+		return []string{""}
+	}
+	var lines []string
+	runes := []rune(s)
+	for len(runes) > width {
+		lines = append(lines, string(runes[:width]))
+		runes = runes[width:]
+	}
+	lines = append(lines, string(runes))
+	return lines
+}
+
+func osc8(label, url string) string {
+	return "\x1b]8;;" + url + "\x1b\\" + label + "\x1b]8;;\x1b\\"
+}
+
+func osc52(text string) string {
+	return "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(text)) + "\a"
 }
