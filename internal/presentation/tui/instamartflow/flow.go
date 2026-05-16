@@ -184,14 +184,16 @@ func (m instamartModel) Init() tea.Cmd {
 }
 
 func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	previousScreen := m.screen
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		updated, cmd := m.handleKey(msg)
+		return clearOnScreenChange(previousScreen, updated, cmd)
 	case instamartAddressesMsg:
 		if msg.err != nil {
 			m.screen = instamartScreenMessage
 			m.err = displayErr("Could not load addresses", msg.err)
-			return m, nil
+			return clearOnScreenChange(previousScreen, m, nil)
 		}
 		m.addresses = msg.addresses
 		m.cursor = 0
@@ -200,12 +202,12 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = instamartScreenMessage
 			m.status = "No saved Instamart addresses were found. Add an address in Swiggy first."
 		}
-		return m, nil
+		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartProductsMsg:
 		if msg.err != nil {
 			m.screen = instamartScreenHome
 			m.err = displayErr("Could not load products", msg.err)
-			return m, nil
+			return clearOnScreenChange(previousScreen, m, nil)
 		}
 		m.products = msg.result.Products
 		m.rows = flattenProductRows(msg.result.Products)
@@ -215,38 +217,38 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = instamartScreenHome
 			m.status = "No matching products found. Try another search."
 		}
-		return m, nil
+		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartCartMsg:
 		if msg.err != nil {
 			m.screen = instamartScreenHome
 			m.err = displayErr("Could not update cart", msg.err)
-			return m, nil
+			return clearOnScreenChange(previousScreen, m, nil)
 		}
 		m.applyCart(msg.cart)
 		m.screen = instamartScreenCartReview
 		m.cursor = 0
 		m.status = "Cart is up to date."
-		return m, nil
+		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartCheckoutMsg:
 		if msg.err != nil {
 			m.screen = instamartScreenCartReview
 			m.err = displayErr("Checkout blocked", msg.err)
-			return m, nil
+			return clearOnScreenChange(previousScreen, m, nil)
 		}
 		m.checkoutResult = msg.result
 		m.screen = instamartScreenOrderResult
 		m.status = msg.result.Message
-		return m, nil
+		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartOrdersMsg:
 		if msg.err != nil {
 			m.screen = instamartScreenHome
 			m.err = displayErr("Could not load orders", msg.err)
-			return m, nil
+			return clearOnScreenChange(previousScreen, m, nil)
 		}
 		m.orders = msg.history
 		m.screen = instamartScreenOrders
 		m.cursor = 0
-		return m, nil
+		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartTrackingMsg:
 		if msg.err != nil {
 			if len(msg.history.Orders) > 0 {
@@ -255,13 +257,24 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.screen = instamartScreenOrders
 			m.err = displayErr("Tracking unavailable", msg.err)
-			return m, nil
+			return clearOnScreenChange(previousScreen, m, nil)
 		}
 		m.tracking = msg.status
 		m.screen = instamartScreenTracking
-		return m, nil
+		return clearOnScreenChange(previousScreen, m, nil)
 	}
 	return m, nil
+}
+
+func clearOnScreenChange(previous instamartScreen, model tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	updated, ok := model.(instamartModel)
+	if !ok || updated.screen == previous {
+		return model, cmd
+	}
+	if cmd == nil {
+		return updated, tea.ClearScreen
+	}
+	return updated, tea.Sequence(tea.ClearScreen, cmd)
 }
 
 func (m instamartModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -707,10 +720,6 @@ func (m instamartModel) trackOrderCmd(order domaininstamart.OrderSummary) tea.Cm
 }
 
 func (v InstamartView) Render(ctx context.Context, w io.Writer) error {
-	in := v.In
-	if in == nil {
-		in = strings.NewReader("")
-	}
 	m := instamartModel{
 		ctx:                ctx,
 		viewport:           v.Viewport,
@@ -720,17 +729,12 @@ func (v InstamartView) Render(ctx context.Context, w io.Writer) error {
 		staticCartCount:    v.CartItemCount,
 		status:             v.StatusMessage,
 	}
-	p := tea.NewProgram(m, tea.WithOutput(w), tea.WithInput(in), tea.WithoutSignals())
-	_, err := p.Run()
+	_, err := runInteractive(m, w, v.In)
 	return err
 }
 
 func (v InstamartAppView) Render(ctx context.Context, w io.Writer) error {
 	ctx = domainauth.ContextWithUserID(ctx, v.UserID)
-	in := v.In
-	if in == nil {
-		in = strings.NewReader("")
-	}
 	m := instamartModel{
 		ctx:      ctx,
 		service:  v.Service,
@@ -743,8 +747,7 @@ func (v InstamartAppView) Render(ctx context.Context, w io.Writer) error {
 		m.screen = instamartScreenMessage
 		m.err = "Instamart is unavailable in this session."
 	}
-	p := tea.NewProgram(m, tea.WithOutput(w), tea.WithInput(in), tea.WithoutSignals())
-	_, err := p.Run()
+	_, err := runInteractive(m, w, v.In)
 	return err
 }
 

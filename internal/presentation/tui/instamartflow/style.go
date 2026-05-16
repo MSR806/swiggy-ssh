@@ -160,6 +160,19 @@ func runStatic(w io.Writer, content string) error {
 	return err
 }
 
+func runInteractive(m tea.Model, w io.Writer, in io.Reader) (tea.Model, error) {
+	if in == nil {
+		in = strings.NewReader("")
+	}
+	p := tea.NewProgram(m,
+		tea.WithOutput(w),
+		tea.WithInput(in),
+		tea.WithoutSignals(),
+		tea.WithAltScreen(),
+	)
+	return p.Run()
+}
+
 func gradientColor(colors []string, index, total int) string {
 	if len(colors) == 1 || total <= 1 {
 		return colors[0]

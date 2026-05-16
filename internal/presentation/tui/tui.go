@@ -295,3 +295,16 @@ func runStatic(w io.Writer, content string) error {
 	_, err := p.Run()
 	return err
 }
+
+func runInteractive(m tea.Model, w io.Writer, in io.Reader) (tea.Model, error) {
+	if in == nil {
+		in = strings.NewReader("")
+	}
+	p := tea.NewProgram(m,
+		tea.WithOutput(w),
+		tea.WithInput(in),
+		tea.WithoutSignals(),
+		tea.WithAltScreen(),
+	)
+	return p.Run()
+}

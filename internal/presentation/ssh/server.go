@@ -402,12 +402,6 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 		_, _ = io.WriteString(ch, "Session handler placeholder complete. Goodbye.\n")
 		return
 	}
-	if err := tui.EnterFullscreen(ch); err != nil {
-		s.logger.WarnContext(ctx, "failed to enter fullscreen tui", "error", err)
-		return
-	}
-	defer func() { _ = tui.ExitFullscreen(ch) }()
-
 	render := func(renderCtx context.Context, view tui.View) {
 		_ = tui.ClearScreen(ch)
 		_ = view.Render(renderCtx, ch)
@@ -535,15 +529,8 @@ func (s *SSHServer) renderLoginWaitingAndPoll(ctx context.Context, ch ssh.Channe
 
 	completed, pollErr := pollAuthAttempt(ctx, s.authAttemptSvc, rawAttempt, s.logger)
 	cancelRender()
-
-	select {
-	case renderErr := <-renderDone:
-		if renderErr != nil {
-			s.logger.WarnContext(ctx, "login waiting render failed", "error", renderErr)
-		}
-	case <-time.After(200 * time.Millisecond):
-		// Do not hold auth completion on terminal input cleanup; the SSH channel
-		// will be closed when the session ends if the renderer is still unwinding.
+	if renderErr := <-renderDone; renderErr != nil {
+		s.logger.WarnContext(ctx, "login waiting render failed", "error", renderErr)
 	}
 
 	return completed, pollErr
