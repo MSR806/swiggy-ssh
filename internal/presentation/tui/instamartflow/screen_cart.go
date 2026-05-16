@@ -19,20 +19,43 @@ func (m instamartModel) renderCartReview(sb *strings.Builder) {
 		sb.WriteString(line(" working tree clean. cart empty."))
 	} else {
 		for _, item := range cart.Items {
-			sb.WriteString(line(fmt.Sprintf(" + %-3s %-38s Rs %d", fmt.Sprintf("%dx", item.Quantity), item.Name, item.FinalPrice)))
+			sb.WriteString(diffLine("+", fmt.Sprintf("%-3s %-38s Rs %d", fmt.Sprintf("%dx", item.Quantity), item.Name, item.FinalPrice)))
 		}
 	}
 	sb.WriteString(line(""))
 	for _, bill := range cart.Bill.Lines {
-		sb.WriteString(line(fmt.Sprintf(" + %-43s %s", bill.Label, bill.Value)))
+		sign := billLineSign(bill)
+		sb.WriteString(diffLine(sign, fmt.Sprintf("%-43s %s", bill.Label, strings.TrimPrefix(strings.TrimSpace(bill.Value), sign))))
 	}
 	toPayLabel := defaultString(cart.Bill.ToPayLabel, "To Pay")
 	toPayValue := cart.Bill.ToPayValue
 	if toPayValue == "" && cart.TotalRupees > 0 {
 		toPayValue = fmt.Sprintf("Rs %d", cart.TotalRupees)
 	}
-	sb.WriteString(line(" " + boldStyle.Render(fmt.Sprintf("+ %-43s %s", toPayLabel, toPayValue))))
+	sb.WriteString(diffLine("+", boldStyle.Render(fmt.Sprintf("%-43s %s", toPayLabel, toPayValue))))
 	sb.WriteString(line(" Payment methods: " + strings.Join(cart.AvailablePaymentMethods, ", ")))
+}
+
+func diffLine(sign, body string) string {
+	marker := successStyle.Render(sign)
+	if sign == "-" {
+		marker = errorStyle.Render(sign)
+	}
+	return line(" " + marker + " " + body)
+}
+
+func billLineSign(bill domaininstamart.BillLine) string {
+	value := strings.TrimSpace(bill.Value)
+	if strings.HasPrefix(value, "-") {
+		return "-"
+	}
+	label := strings.ToLower(bill.Label)
+	for _, token := range []string{"discount", "saving", "coupon", "offer", "cashback"} {
+		if strings.Contains(label, token) {
+			return "-"
+		}
+	}
+	return "+"
 }
 
 func (m instamartModel) renderCheckoutConfirm(sb *strings.Builder) {

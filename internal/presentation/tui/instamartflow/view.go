@@ -24,7 +24,7 @@ func (m instamartModel) View() string {
 	case instamartScreenStatic:
 		m.renderStatic(&sb)
 	case instamartScreenLoadingAddresses:
-		sb.WriteString(line(" Loading saved delivery addresses..."))
+		sb.WriteString(line(" Loading saved deployment addresses..."))
 	case instamartScreenAddressSelect:
 		m.renderAddresses(&sb)
 	case instamartScreenHome:

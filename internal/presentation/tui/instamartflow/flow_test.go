@@ -24,7 +24,7 @@ func TestInstamartAddressSelectionRequiredBeforeSearch(t *testing.T) {
 	if got.screen != instamartScreenHome {
 		t.Fatalf("expected home screen, got %v", got.screen)
 	}
-	if !strings.Contains(got.err, "Choose a delivery address") {
+	if !strings.Contains(got.err, "Choose a deployment address") {
 		t.Fatalf("expected address error, got %q", got.err)
 	}
 }
@@ -332,19 +332,25 @@ func TestInstamartCartReviewRendersCheckoutDetails(t *testing.T) {
 		AddressLocation:    &domaininstamart.Location{Lat: 12.34, Lng: 56.78},
 		Items:              []domaininstamart.CartItem{{SpinID: "spin-milk", Name: "Milk 1 L", Quantity: 2, FinalPrice: 120}},
 		Bill: domaininstamart.BillBreakdown{
-			Lines:       []domaininstamart.BillLine{{Label: "Item Total", Value: "Rs 120"}, {Label: "Fees", Value: "Rs 20"}},
+			Lines:       []domaininstamart.BillLine{{Label: "Item Total", Value: "Rs 120"}, {Label: "Coupon Discount", Value: "-Rs 20"}},
 			ToPayLabel:  "To Pay",
-			ToPayValue:  "Rs 140",
-			ToPayRupees: 140,
+			ToPayValue:  "Rs 100",
+			ToPayRupees: 100,
 		},
 		AvailablePaymentMethods: []string{"Cash"},
 		StoreIDs:                []string{"store-1", "store-2"},
 	}}
 	out := m.View()
-	for _, want := range []string{"review staged cart", "Work", "+ 2x", "Milk 1 L", "+ Item Total", "+ To Pay", "Rs 140", "Cash", "warn: cart spans 2 stores"} {
+	for _, want := range []string{"review staged cart", "Work", "2x", "Milk 1 L", "Item Total", "Coupon Discount", "To Pay", "Rs 100", "Cash", "warn: cart spans 2 stores"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in cart review", want)
 		}
+	}
+	if !strings.Contains(out, "38;2;0;170;68") {
+		t.Fatal("expected addition marker to be green")
+	}
+	if !strings.Contains(out, "38;2;255;68;68") {
+		t.Fatal("expected discount marker to be red")
 	}
 	if strings.Contains(out, "Tower, Bangalore") {
 		t.Fatal("full address must not be rendered")
@@ -635,7 +641,7 @@ func TestInstamartViewCartRequiresSelectedAddress(t *testing.T) {
 	if fake.getCartCalls != 0 {
 		t.Fatal("service GetCart should not be called before address selection")
 	}
-	if !strings.Contains(updated.(instamartModel).err, "Choose a delivery address") {
+	if !strings.Contains(updated.(instamartModel).err, "Choose a deployment address") {
 		t.Fatalf("expected address error, got %q", updated.(instamartModel).err)
 	}
 }

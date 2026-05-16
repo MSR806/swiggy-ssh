@@ -20,7 +20,7 @@ func (m instamartModel) renderStatic(sb *strings.Builder) {
 }
 
 func (m instamartModel) renderAddresses(sb *strings.Builder) {
-	sb.WriteString(line(brandStyle.Render(" Select delivery address")))
+	sb.WriteString(line(brandStyle.Render(" select deployment address")))
 	sb.WriteString(line(""))
 	for i, address := range m.addresses {
 		label := fmt.Sprintf("%d. %s", i+1, addressLabel(address))

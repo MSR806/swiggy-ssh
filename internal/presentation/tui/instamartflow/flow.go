@@ -255,14 +255,14 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchPreviewProducts = nil
 				m.searchPreviewRows = nil
 				m.searchPreviewErr = displayErr("Could not load products", msg.err)
-				return clearOnScreenChange(previousScreen, m, nil)
+				return clearOnScreenChange(previousScreen, m, tea.ClearScreen)
 			}
 			m.searchPreviewLoaded = true
 			m.searchPreviewProducts = msg.result.Products
 			m.searchPreviewRows = flattenProductRows(msg.result.Products)
 			m.searchPreviewElapsed = msg.elapsed
 			m.searchPreviewErr = ""
-			return clearOnScreenChange(previousScreen, m, nil)
+			return clearOnScreenChange(previousScreen, m, tea.ClearScreen)
 		}
 		if msg.err != nil {
 			m.screen = instamartScreenHome
@@ -290,7 +290,7 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchPreviewRows = nil
 		m.searchPreviewElapsed = 0
 		m.searchPreviewErr = ""
-		return clearOnScreenChange(previousScreen, m, tea.Batch(m.searchProductsCmd(msg.query, true, msg.version), m.searchSpinnerCmd(msg.version)))
+		return clearOnScreenChange(previousScreen, m, tea.Sequence(tea.ClearScreen, tea.Batch(m.searchProductsCmd(msg.query, true, msg.version), m.searchSpinnerCmd(msg.version))))
 	case instamartSearchSpinnerMsg:
 		if m.screen != instamartScreenSearchInput || !m.searchPreviewLoading || msg.version != m.searchPreviewVersion {
 			return clearOnScreenChange(previousScreen, m, nil)
@@ -502,7 +502,7 @@ func (m instamartModel) runHomeAction(action string) (tea.Model, tea.Cmd) {
 		return m.startSearch(), nil
 	case "goto":
 		if !m.hasAddress() {
-			m.err = "Choose a delivery address first."
+			m.err = "Choose a deployment address first."
 			return m, nil
 		}
 		m.screen = instamartScreenLoading
@@ -510,7 +510,7 @@ func (m instamartModel) runHomeAction(action string) (tea.Model, tea.Cmd) {
 		return m, m.loadGoToItemsCmd()
 	case "cart":
 		if !m.hasAddress() {
-			m.err = "Choose a delivery address first."
+			m.err = "Choose a deployment address first."
 			return m, nil
 		}
 		return m.loadCart("Loading staged cart...")
@@ -546,7 +546,7 @@ func (m instamartModel) handleHelpKey(key string) (tea.Model, tea.Cmd) {
 
 func (m instamartModel) startSearch() instamartModel {
 	if !m.hasAddress() {
-		m.err = "Choose a delivery address first."
+		m.err = "Choose a deployment address first."
 		return m
 	}
 	m.screen = instamartScreenSearchInput
@@ -596,7 +596,14 @@ func (m instamartModel) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd = m.queueSearchPreview()
 		}
 	}
-	return m, cmd
+	return m, clearSearchRenderCmd(cmd)
+}
+
+func clearSearchRenderCmd(cmd tea.Cmd) tea.Cmd {
+	if cmd == nil {
+		return tea.ClearScreen
+	}
+	return tea.Sequence(tea.ClearScreen, cmd)
 }
 
 func (m *instamartModel) queueSearchPreview() tea.Cmd {
@@ -1046,7 +1053,7 @@ func displayErr(prefix string, err error) string {
 	case err == nil:
 		return prefix
 	case errors.Is(err, appinstamart.ErrAddressRequired):
-		return prefix + ": choose a delivery address first."
+		return prefix + ": choose a deployment address first."
 	case errors.Is(err, appinstamart.ErrVariantRequired):
 		return prefix + ": choose an exact product variation."
 	case errors.Is(err, appinstamart.ErrCartEmpty):
