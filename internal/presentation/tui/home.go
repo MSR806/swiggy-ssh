@@ -36,7 +36,7 @@ var homeItems = []homeItem{
 	{"Account", false},
 }
 
-var homeLogoGradient = []string{"#FC8019", "#FF8F1F", "#FFA12B", "#FFB347"}
+var homeLogoGradient = []string{"#E97112", "#FC8019", "#FF8B2E", "#FF9843"}
 
 type homeModel struct {
 	ctx      context.Context

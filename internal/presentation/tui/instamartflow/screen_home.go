@@ -40,7 +40,7 @@ func (m instamartModel) renderHome(sb *strings.Builder) {
 	if m.selectedAddress == nil {
 		sb.WriteString(line(" Choose an address before searching or checkout."))
 	} else {
-		sb.WriteString(line(" " + brandStyle.Render("Address:") + " " + boldStyle.Render(addressLabel(*m.selectedAddress)) + creamStyle.Render(" — "+redactLine(m.selectedAddress.DisplayLine))))
+		sb.WriteString(line(" " + brandStyle.Render("deploying to:") + " " + boldStyle.Render(addressLabel(*m.selectedAddress)) + creamStyle.Render(" — "+redactLine(m.selectedAddress.DisplayLine))))
 	}
 	sb.WriteString(line(" " + brandStyle.Render("Cart:") + " " + creamStyle.Render(fmt.Sprintf("%d items", len(m.intendedItems)))))
 	sb.WriteString(line(""))
@@ -52,4 +52,17 @@ func (m instamartModel) renderHome(sb *strings.Builder) {
 			sb.WriteString(line("   " + label))
 		}
 	}
+}
+
+func (m instamartModel) renderHelp(sb *strings.Builder) {
+	sb.WriteString(line(brandStyle.Render(" swiggy.dev keys")))
+	sb.WriteString(line(""))
+	sb.WriteString(line(" j/k        move"))
+	sb.WriteString(line(" /          grep products"))
+	sb.WriteString(line(" c          staged cart"))
+	sb.WriteString(line(" enter      choose"))
+	sb.WriteString(line(" +/-        change quantity"))
+	sb.WriteString(line(" p          ship from cart"))
+	sb.WriteString(line(" b          back home"))
+	sb.WriteString(line(" q          quit"))
 }

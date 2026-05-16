@@ -6,7 +6,7 @@ import (
 )
 
 func (m instamartModel) renderOrders(sb *strings.Builder) {
-	sb.WriteString(line(brandStyle.Render(" Recent orders")))
+	sb.WriteString(line(brandStyle.Render(" deploy history")))
 	if len(m.orders.Orders) == 0 {
 		sb.WriteString(line(" No matching orders found."))
 		return
@@ -30,7 +30,7 @@ func (m instamartModel) renderOrders(sb *strings.Builder) {
 }
 
 func (m instamartModel) renderTracking(sb *strings.Builder) {
-	sb.WriteString(line(brandStyle.Render(" Tracking")))
+	sb.WriteString(line(brandStyle.Render(" tail active order")))
 	if m.tracking.StatusMessage == "" {
 		sb.WriteString(line(" Tracking is unavailable for this order in the terminal. Please check the Swiggy Instamart app."))
 		return

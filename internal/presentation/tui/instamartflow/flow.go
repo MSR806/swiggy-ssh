@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	appinstamart "swiggy-ssh/internal/application/instamart"
 	domainauth "swiggy-ssh/internal/domain/auth"
@@ -16,6 +17,10 @@ import (
 )
 
 const cancellationGuidance = "To cancel your order, please call Swiggy customer care at 080-67466729."
+
+const searchPreviewDebounce = 350 * time.Millisecond
+
+var searchSpinnerFrames = []string{"|", "/", "-", "\\"}
 
 // InstamartService is the application boundary used by the terminal UI.
 // It intentionally mirrors only the use cases this view can trigger.
@@ -87,6 +92,7 @@ const (
 	instamartScreenOrders
 	instamartScreenTracking
 	instamartScreenMessage
+	instamartScreenHelp
 )
 
 type instamartHomeChoice struct {
@@ -95,13 +101,13 @@ type instamartHomeChoice struct {
 }
 
 var instamartHomeChoices = []instamartHomeChoice{
-	{label: "Search products", action: "search"},
-	{label: "Your go-to items", action: "goto"},
-	{label: "View cart", action: "cart"},
-	{label: "Track active order", action: "track"},
-	{label: "Order history", action: "orders"},
+	{label: "grep products", action: "search"},
+	{label: "recent cache", action: "goto"},
+	{label: "staged cart", action: "cart"},
+	{label: "tail active order", action: "track"},
+	{label: "deploy history", action: "orders"},
 	{label: "Cancel order help", action: "cancel"},
-	{label: "Change address", action: "address"},
+	{label: "switch target address", action: "address"},
 }
 
 type productVariationRow struct {
@@ -114,6 +120,7 @@ type instamartModel struct {
 	service  InstamartService
 	viewport Viewport
 	screen   instamartScreen
+	backTo   instamartScreen
 	loading  string
 
 	staticAddressLabel string
@@ -130,6 +137,17 @@ type instamartModel struct {
 	selectedAddress *domaininstamart.Address
 
 	searchQuery string
+
+	searchPreviewQuery    string
+	searchPreviewProducts []domaininstamart.Product
+	searchPreviewRows     []productVariationRow
+	searchPreviewLoading  bool
+	searchPreviewLoaded   bool
+	searchPreviewVersion  int
+	searchPreviewSpinner  int
+	searchPreviewErr      string
+	searchPreviewElapsed  time.Duration
+
 	products    []domaininstamart.Product
 	rows        []productVariationRow
 	selectedRow *productVariationRow
@@ -140,40 +158,61 @@ type instamartModel struct {
 	paymentMethod string
 	reviewedCart  *domaininstamart.CartReviewSnapshot
 
-	checkoutResult domaininstamart.CheckoutResult
-	orders         domaininstamart.OrderHistory
-	tracking       domaininstamart.TrackingStatus
+	checkoutResult  domaininstamart.CheckoutResult
+	checkoutElapsed time.Duration
+	orders          domaininstamart.OrderHistory
+	tracking        domaininstamart.TrackingStatus
 }
 
 type instamartAddressesMsg struct {
 	addresses []domaininstamart.Address
 	err       error
+	elapsed   time.Duration
 }
 
 type instamartProductsMsg struct {
-	result domaininstamart.ProductSearchResult
-	err    error
+	query   string
+	version int
+	preview bool
+	result  domaininstamart.ProductSearchResult
+	err     error
+	elapsed time.Duration
+}
+
+type instamartSearchDebounceMsg struct {
+	query   string
+	version int
+}
+
+type instamartSearchSpinnerMsg struct {
+	version int
 }
 
 type instamartCartMsg struct {
-	cart domaininstamart.Cart
-	err  error
+	cart    domaininstamart.Cart
+	err     error
+	action  string
+	elapsed time.Duration
 }
 
 type instamartCheckoutMsg struct {
-	result domaininstamart.CheckoutResult
-	err    error
+	result  domaininstamart.CheckoutResult
+	err     error
+	elapsed time.Duration
 }
 
 type instamartOrdersMsg struct {
-	history domaininstamart.OrderHistory
-	err     error
+	history    domaininstamart.OrderHistory
+	activeOnly bool
+	err        error
+	elapsed    time.Duration
 }
 
 type instamartTrackingMsg struct {
 	status  domaininstamart.TrackingStatus
 	history domaininstamart.OrderHistory
 	err     error
+	elapsed time.Duration
 }
 
 func (m instamartModel) Init() tea.Cmd {
@@ -198,12 +237,33 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addresses = msg.addresses
 		m.cursor = 0
 		m.screen = instamartScreenAddressSelect
+		m.status = "loaded addresses in " + formatElapsed(msg.elapsed)
 		if len(msg.addresses) == 0 {
 			m.screen = instamartScreenMessage
 			m.status = "No saved Instamart addresses were found. Add an address in Swiggy first."
 		}
 		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartProductsMsg:
+		if msg.preview {
+			if m.screen != instamartScreenSearchInput || msg.version != m.searchPreviewVersion || msg.query != m.searchQuery {
+				return clearOnScreenChange(previousScreen, m, nil)
+			}
+			m.searchPreviewLoading = false
+			m.searchPreviewQuery = msg.query
+			if msg.err != nil {
+				m.searchPreviewLoaded = false
+				m.searchPreviewProducts = nil
+				m.searchPreviewRows = nil
+				m.searchPreviewErr = displayErr("Could not load products", msg.err)
+				return clearOnScreenChange(previousScreen, m, nil)
+			}
+			m.searchPreviewLoaded = true
+			m.searchPreviewProducts = msg.result.Products
+			m.searchPreviewRows = flattenProductRows(msg.result.Products)
+			m.searchPreviewElapsed = msg.elapsed
+			m.searchPreviewErr = ""
+			return clearOnScreenChange(previousScreen, m, nil)
+		}
 		if msg.err != nil {
 			m.screen = instamartScreenHome
 			m.err = displayErr("Could not load products", msg.err)
@@ -213,11 +273,30 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rows = flattenProductRows(msg.result.Products)
 		m.cursor = 0
 		m.screen = instamartScreenProductList
+		m.status = fmt.Sprintf("matched %d products in %s", len(m.rows), formatElapsed(msg.elapsed))
 		if len(m.rows) == 0 {
 			m.screen = instamartScreenHome
 			m.status = "No matching products found. Try another search."
 		}
 		return clearOnScreenChange(previousScreen, m, nil)
+	case instamartSearchDebounceMsg:
+		if m.screen != instamartScreenSearchInput || msg.version != m.searchPreviewVersion || msg.query != m.searchQuery || len([]rune(strings.TrimSpace(msg.query))) < 2 {
+			return clearOnScreenChange(previousScreen, m, nil)
+		}
+		m.searchPreviewLoading = true
+		m.searchPreviewLoaded = false
+		m.searchPreviewQuery = msg.query
+		m.searchPreviewProducts = nil
+		m.searchPreviewRows = nil
+		m.searchPreviewElapsed = 0
+		m.searchPreviewErr = ""
+		return clearOnScreenChange(previousScreen, m, tea.Batch(m.searchProductsCmd(msg.query, true, msg.version), m.searchSpinnerCmd(msg.version)))
+	case instamartSearchSpinnerMsg:
+		if m.screen != instamartScreenSearchInput || !m.searchPreviewLoading || msg.version != m.searchPreviewVersion {
+			return clearOnScreenChange(previousScreen, m, nil)
+		}
+		m.searchPreviewSpinner = (m.searchPreviewSpinner + 1) % len(searchSpinnerFrames)
+		return clearOnScreenChange(previousScreen, m, m.searchSpinnerCmd(msg.version))
 	case instamartCartMsg:
 		if msg.err != nil {
 			m.screen = instamartScreenHome
@@ -227,7 +306,7 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyCart(msg.cart)
 		m.screen = instamartScreenCartReview
 		m.cursor = 0
-		m.status = "Cart is up to date."
+		m.status = msg.action + " in " + formatElapsed(msg.elapsed)
 		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartCheckoutMsg:
 		if msg.err != nil {
@@ -236,8 +315,9 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return clearOnScreenChange(previousScreen, m, nil)
 		}
 		m.checkoutResult = msg.result
+		m.checkoutElapsed = msg.elapsed
 		m.screen = instamartScreenOrderResult
-		m.status = msg.result.Message
+		m.status = "deployed in " + formatElapsed(msg.elapsed)
 		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartOrdersMsg:
 		if msg.err != nil {
@@ -248,6 +328,11 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.orders = msg.history
 		m.screen = instamartScreenOrders
 		m.cursor = 0
+		if msg.activeOnly {
+			m.status = "loaded active orders in " + formatElapsed(msg.elapsed)
+		} else {
+			m.status = "loaded deploy history in " + formatElapsed(msg.elapsed)
+		}
 		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartTrackingMsg:
 		if msg.err != nil {
@@ -261,6 +346,10 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.tracking = msg.status
 		m.screen = instamartScreenTracking
+		m.status = "tailed in " + formatElapsed(msg.elapsed)
+		if msg.status.ETAText != "" {
+			m.status += " · ETA " + msg.status.ETAText
+		}
 		return clearOnScreenChange(previousScreen, m, nil)
 	}
 	return m, nil
@@ -282,8 +371,16 @@ func (m instamartModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key == "ctrl+c" || key == "q" {
 		return m, tea.Quit
 	}
+	if key == "?" && m.screen != instamartScreenHelp {
+		m.backTo = m.screen
+		m.screen = instamartScreenHelp
+		return m, nil
+	}
 	if m.screen == instamartScreenStatic {
 		return m.handleStaticKey(key)
+	}
+	if m.screen == instamartScreenHelp {
+		return m.handleHelpKey(key)
 	}
 	if key == "esc" {
 		if m.screen == instamartScreenCheckoutConfirm {
@@ -366,7 +463,7 @@ func (m instamartModel) selectAddress(idx int) (tea.Model, tea.Cmd) {
 	m.selectedAddress = &m.addresses[idx]
 	m.screen = instamartScreenHome
 	m.homeCursor = 0
-	m.status = "Delivering to " + addressLabel(m.addresses[idx])
+	m.status = "deploying to " + addressLabel(m.addresses[idx])
 	m.err = ""
 	return m, nil
 }
@@ -409,21 +506,21 @@ func (m instamartModel) runHomeAction(action string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.screen = instamartScreenLoading
-		m.loading = "Loading your go-to items..."
+		m.loading = "Loading recent cache..."
 		return m, m.loadGoToItemsCmd()
 	case "cart":
 		if !m.hasAddress() {
 			m.err = "Choose a delivery address first."
 			return m, nil
 		}
-		return m.loadCart("Loading cart...")
+		return m.loadCart("Loading staged cart...")
 	case "track":
 		m.screen = instamartScreenLoading
 		m.loading = "Looking for active orders..."
 		return m, m.loadOrdersCmd(true)
 	case "orders":
 		m.screen = instamartScreenLoading
-		m.loading = "Loading recent orders..."
+		m.loading = "Loading deploy history..."
 		return m, m.loadOrdersCmd(false)
 	case "cancel":
 		m.screen = instamartScreenMessage
@@ -439,6 +536,14 @@ func (m instamartModel) runHomeAction(action string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m instamartModel) handleHelpKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "?", "b", "h", "enter", "esc":
+		m.screen = m.backTo
+	}
+	return m, nil
+}
+
 func (m instamartModel) startSearch() instamartModel {
 	if !m.hasAddress() {
 		m.err = "Choose a delivery address first."
@@ -446,6 +551,15 @@ func (m instamartModel) startSearch() instamartModel {
 	}
 	m.screen = instamartScreenSearchInput
 	m.searchQuery = ""
+	m.searchPreviewQuery = ""
+	m.searchPreviewProducts = nil
+	m.searchPreviewRows = nil
+	m.searchPreviewLoading = false
+	m.searchPreviewLoaded = false
+	m.searchPreviewElapsed = 0
+	m.searchPreviewVersion++
+	m.searchPreviewSpinner = 0
+	m.searchPreviewErr = ""
 	m.err = ""
 	m.status = ""
 	return m
@@ -453,27 +567,69 @@ func (m instamartModel) startSearch() instamartModel {
 
 func (m instamartModel) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	var cmd tea.Cmd
 	switch key {
 	case "enter":
-		query := strings.TrimSpace(m.searchQuery)
-		if query == "" {
+		query := m.searchQuery
+		if strings.TrimSpace(query) == "" {
 			m.err = "Type a product name before searching."
 			return m, nil
 		}
+		if m.searchPreviewLoaded && m.searchPreviewQuery == query {
+			return m.openProductList(m.searchPreviewProducts), nil
+		}
 		m.screen = instamartScreenLoading
-		m.loading = "Searching for " + query + "..."
-		return m, m.searchProductsCmd(query)
+		m.loading = "scanning index..."
+		return m, m.searchProductsCmd(query, false, m.searchPreviewVersion)
 	case "backspace", "ctrl+h":
 		if len(m.searchQuery) > 0 {
 			runes := []rune(m.searchQuery)
 			m.searchQuery = string(runes[:len(runes)-1])
+			cmd = m.queueSearchPreview()
 		}
+	case "space", " ":
+		m.searchQuery += " "
+		cmd = m.queueSearchPreview()
 	default:
 		if msg.Type == tea.KeyRunes {
 			m.searchQuery += msg.String()
+			cmd = m.queueSearchPreview()
 		}
 	}
-	return m, nil
+	return m, cmd
+}
+
+func (m *instamartModel) queueSearchPreview() tea.Cmd {
+	m.searchPreviewVersion++
+	m.searchPreviewLoading = false
+	m.searchPreviewLoaded = false
+	m.searchPreviewQuery = ""
+	m.searchPreviewProducts = nil
+	m.searchPreviewRows = nil
+	m.searchPreviewErr = ""
+	if len([]rune(strings.TrimSpace(m.searchQuery))) < 2 {
+		return nil
+	}
+	query := m.searchQuery
+	version := m.searchPreviewVersion
+	return tea.Tick(searchPreviewDebounce, func(time.Time) tea.Msg {
+		return instamartSearchDebounceMsg{query: query, version: version}
+	})
+}
+
+func (m instamartModel) openProductList(products []domaininstamart.Product) instamartModel {
+	m.products = products
+	m.rows = flattenProductRows(products)
+	m.cursor = 0
+	m.screen = instamartScreenProductList
+	if m.searchPreviewElapsed > 0 {
+		m.status = fmt.Sprintf("matched %d products in %s", len(m.rows), formatElapsed(m.searchPreviewElapsed))
+	}
+	if len(m.rows) == 0 {
+		m.screen = instamartScreenHome
+		m.status = "No matching products found. Try another search."
+	}
+	return m
 }
 
 func (m instamartModel) handleProductKey(key string) (tea.Model, tea.Cmd) {
@@ -506,7 +662,7 @@ func (m instamartModel) selectProductRow(idx int) (tea.Model, tea.Cmd) {
 		m.err = "That product variation cannot be added from the terminal."
 		return m, nil
 	}
-	if !row.Product.InStock || !row.Product.Available || !row.Variation.InStock {
+	if !productRowAvailable(row) {
 		m.err = "That product variation is currently unavailable."
 		return m, nil
 	}
@@ -553,7 +709,7 @@ func (m instamartModel) handleCartReviewKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if strings.TrimSpace(m.currentCart.AddressID) != "" && strings.TrimSpace(m.currentCart.AddressID) != strings.TrimSpace(m.selectedAddressID()) {
-			m.err = "Cart address no longer matches the selected address. Change address or update the cart again."
+			m.err = "Cart address no longer matches the selected address. Switch target address or update the cart again."
 			return m, nil
 		}
 		if len(m.currentCart.AvailablePaymentMethods) == 0 {
@@ -581,9 +737,9 @@ func (m instamartModel) handleCartReviewKey(key string) (tea.Model, tea.Cmd) {
 
 func (m instamartModel) handleCheckoutConfirmKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
-	case "y", "enter":
+	case "y":
 		m.screen = instamartScreenLoading
-		m.loading = "Placing Instamart order..."
+		m.loading = "git push --force groceries..."
 		return m, m.checkoutCmd()
 	case "n", "b", "esc":
 		m.screen = instamartScreenCartReview
@@ -647,75 +803,104 @@ func (m instamartModel) selectedAddressID() string {
 	return m.selectedAddress.ID
 }
 
+func formatElapsed(elapsed time.Duration) string {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if elapsed < time.Second {
+		return strconv.FormatInt(elapsed.Milliseconds(), 10) + "ms"
+	}
+	if elapsed < time.Minute {
+		return strconv.FormatFloat(float64(elapsed)/float64(time.Second), 'f', 1, 64) + "s"
+	}
+	minutes := int(elapsed / time.Minute)
+	seconds := int((elapsed % time.Minute) / time.Second)
+	return fmt.Sprintf("%dm %02ds", minutes, seconds)
+}
+
 func (m instamartModel) loadAddressesCmd() tea.Cmd {
 	return func() tea.Msg {
+		started := time.Now()
 		addresses, err := m.service.GetAddresses(m.ctx)
-		return instamartAddressesMsg{addresses: addresses, err: err}
+		return instamartAddressesMsg{addresses: addresses, err: err, elapsed: time.Since(started)}
 	}
 }
 
-func (m instamartModel) searchProductsCmd(query string) tea.Cmd {
+func (m instamartModel) searchProductsCmd(query string, preview bool, version int) tea.Cmd {
 	return func() tea.Msg {
+		started := time.Now()
 		result, err := m.service.SearchProducts(m.ctx, appinstamart.SearchProductsInput{AddressID: m.selectedAddressID(), Query: query})
-		return instamartProductsMsg{result: result, err: err}
+		return instamartProductsMsg{query: query, version: version, preview: preview, result: result, err: err, elapsed: time.Since(started)}
 	}
+}
+
+func (m instamartModel) searchSpinnerCmd(version int) tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		return instamartSearchSpinnerMsg{version: version}
+	})
 }
 
 func (m instamartModel) loadGoToItemsCmd() tea.Cmd {
 	return func() tea.Msg {
+		started := time.Now()
 		result, err := m.service.GetGoToItems(m.ctx, appinstamart.GetGoToItemsInput{AddressID: m.selectedAddressID()})
-		return instamartProductsMsg{result: result, err: err}
+		return instamartProductsMsg{result: result, err: err, elapsed: time.Since(started)}
 	}
 }
 
 func (m instamartModel) loadCartCmd() tea.Cmd {
 	return func() tea.Msg {
+		started := time.Now()
 		cart, err := m.service.GetCart(m.ctx)
-		return instamartCartMsg{cart: cart, err: err}
+		return instamartCartMsg{cart: cart, err: err, action: "loaded staged cart", elapsed: time.Since(started)}
 	}
 }
 
 func (m instamartModel) updateCartCmd(items []domaininstamart.CartUpdateItem) tea.Cmd {
 	return func() tea.Msg {
+		started := time.Now()
 		cart, err := m.service.UpdateCart(m.ctx, appinstamart.UpdateCartInput{SelectedAddressID: m.selectedAddressID(), Items: items})
-		return instamartCartMsg{cart: cart, err: err}
+		return instamartCartMsg{cart: cart, err: err, action: "staged", elapsed: time.Since(started)}
 	}
 }
 
 func (m instamartModel) checkoutCmd() tea.Cmd {
 	return func() tea.Msg {
+		started := time.Now()
 		result, err := m.service.Checkout(m.ctx, appinstamart.CheckoutInput{
 			AddressID:     m.selectedAddressID(),
 			PaymentMethod: m.paymentMethod,
 			Confirmed:     true,
 			ReviewedCart:  m.reviewedCart,
 		})
-		return instamartCheckoutMsg{result: result, err: err}
+		return instamartCheckoutMsg{result: result, err: err, elapsed: time.Since(started)}
 	}
 }
 
 func (m instamartModel) loadOrdersCmd(activeOnly bool) tea.Cmd {
 	return func() tea.Msg {
+		started := time.Now()
 		history, err := m.service.GetOrders(m.ctx, appinstamart.GetOrdersInput{Count: 10, ActiveOnly: activeOnly})
 		if err != nil || !activeOnly || len(history.Orders) == 0 {
-			return instamartOrdersMsg{history: history, err: err}
+			return instamartOrdersMsg{history: history, activeOnly: activeOnly, err: err, elapsed: time.Since(started)}
 		}
 		order := history.Orders[0]
 		if order.Location == nil {
-			return instamartOrdersMsg{history: history, err: nil}
+			return instamartOrdersMsg{history: history, activeOnly: activeOnly, err: nil, elapsed: time.Since(started)}
 		}
 		status, trackErr := m.service.TrackOrder(m.ctx, appinstamart.TrackOrderInput{OrderID: order.OrderID, Location: order.Location})
-		return instamartTrackingMsg{status: status, history: history, err: trackErr}
+		return instamartTrackingMsg{status: status, history: history, err: trackErr, elapsed: time.Since(started)}
 	}
 }
 
 func (m instamartModel) trackOrderCmd(order domaininstamart.OrderSummary) tea.Cmd {
 	return func() tea.Msg {
+		started := time.Now()
 		if order.Location == nil {
-			return instamartTrackingMsg{}
+			return instamartTrackingMsg{elapsed: time.Since(started)}
 		}
 		status, err := m.service.TrackOrder(m.ctx, appinstamart.TrackOrderInput{OrderID: order.OrderID, Location: order.Location})
-		return instamartTrackingMsg{status: status, err: err}
+		return instamartTrackingMsg{status: status, err: err, elapsed: time.Since(started)}
 	}
 }
 
@@ -770,7 +955,7 @@ func productRowText(row productVariationRow) string {
 	pack := row.Variation.QuantityDescription
 	price := row.Variation.Price.OfferPrice
 	stock := ""
-	if !row.Product.InStock || !row.Product.Available || !row.Variation.InStock {
+	if !productRowAvailable(row) {
 		stock = " · unavailable"
 	}
 	if pack != "" {
