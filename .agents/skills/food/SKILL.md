@@ -46,14 +46,14 @@ Call a tool:
 ## Workflow Tree
 
 1. `get_addresses`
-2. Select `addressId`
+2. Show saved addresses and stop until the user selects one. Never guess or invent `addressId`.
 3. `search_restaurants` with `addressId`, `query`, optional `offset`
 4. Pick an `OPEN` restaurant and persist `restaurantId` and `restaurantName`
 5. Browse with `get_restaurant_menu` or search a dish with `search_menu`
 6. For customized items, choose variants/addons from `search_menu`
 7. `update_food_cart`
 8. `get_food_cart`
-9. Optional: `fetch_food_coupons` then `apply_food_coupon` if a valid coupon exists
+9. Optional: `fetch_food_coupons` then `apply_food_coupon` if a COD-compatible valid coupon exists
 10. Show full cart, available payment methods, and delivery address
 11. Require explicit confirmation
 12. `place_food_order`
@@ -83,12 +83,18 @@ Addon flow for customized items:
 | `place_food_order` | Places a real Food delivery order. | `addressId` | `paymentMethod` | Only after `get_food_cart`, address/payment/total display, and explicit confirmation. |
 | `fetch_food_coupons` | Fetches coupons/offers for a restaurant/address. | `restaurantId`, `addressId` | `couponCode` | Use before checkout; only recommend COD-compatible coupons. |
 | `apply_food_coupon` | Applies a coupon to Food cart. | `couponCode`, `addressId` | `cartId` | Use only with a valid coupon code. |
-| `get_food_orders` | Gets Food order history or active orders. | `addressId` | `activeOnly` | Use for recent/past/current Food orders. |
+| `get_food_orders` | Gets Food order history or active orders. | `addressId` | `activeOnly` | Leave `activeOnly=false` for generic history. Set `activeOnly=true` only for active/current/ongoing orders. |
 | `get_food_order_details` | Gets detailed Food order information. | `orderId` | - | Use with an order id from `get_food_orders`. |
 | `track_food_order` | Tracks active Food delivery orders. | - | `orderId` | Use for active/in-progress Food order ETA/status. |
 | `report_error` | Generates MCP team error report. | `tool`, `errorMessage` | `domain`, `flowDescription`, `toolContext`, `userNotes` | Include IDs like `orderId`, `restaurantId`, `couponCode`, `menu_item_id`. |
 
 ## Real Response Examples
+
+### `get_addresses`
+
+Use first for Food delivery. The response contains saved address IDs and display details, but no coordinates. Show the list to the user and ask which address to use before calling restaurant/menu/cart tools.
+
+Do not guess, invent, or hard-code `addressId`.
 
 ### `search_restaurants`
 
@@ -224,6 +230,10 @@ Payment methods: Cash
 
 Checkout precondition: display items, totals, payment methods, and delivery address before `place_food_order`.
 
+Use only payment methods returned by `get_food_cart`. Do not mention or assume payment methods not present in the response.
+
+If cart offers show `coupon_applied` with `coupon_discount=0`, treat it as an auto-suggested coupon, not an applied discount. Do not claim savings unless discount is greater than zero.
+
 ### `fetch_food_coupons`
 
 Call used:
@@ -293,7 +303,8 @@ Flushed Food cart successfully
 - `place_food_order` creates a real Food delivery order. Call it only after the user has seen final address, items, bill total, and payment method, then explicitly confirms.
 - Only use payment methods returned by `get_food_cart`.
 - Do not place Food orders with cart value `₹1000` or more; direct the user to the Swiggy app.
-- For cancellation requests, do not call MCP tools. Use Swiggy customer care or the Swiggy app.
+- On successful order placement, show the returned message as-is. Do not rephrase Swiggy-branded success text.
+- For cancellation requests, do not call MCP tools. Tell the user exactly: "To cancel your order, please call Swiggy customer care at 080-67466729."
 
 ## Coverage Check
 

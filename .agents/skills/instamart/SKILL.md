@@ -66,8 +66,8 @@ Important: `update_cart` replaces the whole Instamart cart with the passed `item
 | Tool | Description | Required args | Optional args | How to use |
 |---|---|---|---|---|
 | `get_addresses` | Gets saved delivery addresses. | - | - | First call for Instamart flows requiring `addressId`. |
-| `search_products` | Searches products available at the selected address. | `addressId`, `query` | `offset` | Present product variations to the user; only use the `spinId` for the exact selected pack/variant. |
-| `your_go_to_items` | Fetches frequently/recently ordered Instamart items. | `addressId` | `offset` | Use for personalized reorder suggestions. Present variations and use the chosen `spinId`. |
+| `search_products` | Searches products available at the selected address. | `addressId`, `query` | `offset` | Present product variations to the user; only use the `spinId` for the exact selected pack/variant. Response `nextOffset` is string-shaped. |
+| `your_go_to_items` | Fetches frequently/recently ordered Instamart items. | `addressId` | `offset` | Use for personalized reorder suggestions. Present variations and use the chosen `spinId`. Response `nextOffset` is string-shaped. |
 | `get_cart` | Gets current Instamart cart, bill breakdown, and payment methods. | - | - | Call after cart mutation and before checkout. |
 | `update_cart` | Replaces cart with provided grocery items. | `selectedAddressId`, `items` | - | `items[]` requires `spinId` and `quantity`. |
 | `clear_cart` | Clears Instamart cart. | - | - | Use for cleanup or explicit empty-cart action. |
@@ -99,7 +99,7 @@ Observed shape:
 }
 ```
 
-Persist `data.addresses[].id`.
+Persist `data.addresses[].id`. Initial `get_addresses` returns address summary fields (`id`, `addressLine`, `phoneNumber`, `addressCategory`, `addressTag`); do not assume `area` or `city` are present here. `area`/`city` may appear later in cart address details.
 
 ### `search_products`
 
@@ -146,7 +146,9 @@ Observed response excerpt:
 }
 ```
 
-Persist `variations[].spinId`, variation name, pack size, stock flags, and price.
+Persist `variations[].spinId`, variation name, pack size, stock flags, and price. Decode `data.nextOffset` as a string or string/number tolerant value.
+
+If `products[].isPromoted` is `true`, clearly mark the product as featured/sponsored in the UI.
 
 ### `update_cart`
 
@@ -357,6 +359,8 @@ Observed response shape:
 }
 ```
 
+Decode `data.nextOffset` as a string or string/number tolerant value.
+
 ### `get_cart` Failure Example
 
 Observed before a cart existed:
@@ -379,7 +383,7 @@ Observed before a cart existed:
 - Only use payment methods returned by `get_cart`.
 - Check cart value before checkout. If cart is `₹1000` or more, ask the user to use the Swiggy Instamart app.
 - If the cart has items from multiple stores, inform the user before checkout and report each resulting order separately after checkout.
-- For cancellation requests, do not call MCP tools. Use the Swiggy app or Swiggy customer care.
+- For cancellation requests, do not call MCP tools. Tell the user exactly: "To cancel your order, please call Swiggy customer care at 080-67466729."
 
 ## Coverage Check
 
