@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -122,21 +121,18 @@ func TestResolveSSHIdentityFoundIdentity(t *testing.T) {
 	}
 }
 
-func TestResolveSSHIdentityUnknownIdentityCreatesUserAndBinding(t *testing.T) {
+func TestResolveSSHIdentityUnknownIdentityReturnsNotFound(t *testing.T) {
 	repo := newTestRepo()
 	useCase := NewResolveSSHIdentityUseCase(repo)
 	key := newSSHPublicKey(t)
 
-	resolved, err := useCase.Execute(context.Background(), ResolveSSHIdentityInput{Client: "ssh", Key: key})
-	if err != nil {
-		t.Fatalf("resolve key: %v", err)
+	_, err := useCase.Execute(context.Background(), ResolveSSHIdentityInput{Client: "ssh", Key: key})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 
-	if !repo.createCalled {
-		t.Fatal("expected create flow for unknown key")
-	}
-	if resolved.User.ID == "" || resolved.SSHIdentity.ID == "" {
-		t.Fatal("expected created user and ssh identity ids")
+	if repo.createCalled {
+		t.Fatal("unknown key must not create user or ssh identity")
 	}
 }
 
@@ -161,137 +157,5 @@ func TestResolveSSHIdentityMissingKeyRejected(t *testing.T) {
 	_, err := useCase.Execute(context.Background(), ResolveSSHIdentityInput{Client: "ssh"})
 	if !errors.Is(err, ErrMissingSSHPublicKey) {
 		t.Fatalf("expected ErrMissingSSHPublicKey, got %v", err)
-	}
-}
-
-type concurrentRaceRepo struct {
-	mu               sync.Mutex
-	identityByFP     map[string]SSHIdentity
-	userByID         map[string]User
-	nextUserID       int
-	nextIdentityID   int
-	createInProgress bool
-	createWait       chan struct{}
-	createDone       chan struct{}
-}
-
-func newConcurrentRaceRepo() *concurrentRaceRepo {
-	return &concurrentRaceRepo{
-		identityByFP: map[string]SSHIdentity{},
-		userByID:     map[string]User{},
-		createWait:   make(chan struct{}),
-		createDone:   make(chan struct{}),
-	}
-}
-
-func (r *concurrentRaceRepo) CreateUser(context.Context, User) (User, error) {
-	panic("unexpected call")
-}
-func (r *concurrentRaceRepo) CreateSSHIdentity(context.Context, SSHIdentity) (SSHIdentity, error) {
-	panic("unexpected call")
-}
-
-func (r *concurrentRaceRepo) FindUserByID(_ context.Context, userID string) (User, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	user, ok := r.userByID[userID]
-	if !ok {
-		return User{}, ErrNotFound
-	}
-	return user, nil
-}
-
-func (r *concurrentRaceRepo) UpdateUserLastSeen(_ context.Context, userID string, lastSeenAt time.Time) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	user := r.userByID[userID]
-	user.LastSeenAt = &lastSeenAt
-	r.userByID[userID] = user
-	return nil
-}
-
-func (r *concurrentRaceRepo) FindSSHIdentityByFingerprint(_ context.Context, fingerprint string) (SSHIdentity, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	identity, ok := r.identityByFP[fingerprint]
-	if !ok {
-		return SSHIdentity{}, ErrNotFound
-	}
-	return identity, nil
-}
-
-func (r *concurrentRaceRepo) UpdateSSHIdentityLastSeen(_ context.Context, fingerprint string, lastSeenAt time.Time) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	identity := r.identityByFP[fingerprint]
-	identity.LastSeenAt = &lastSeenAt
-	r.identityByFP[fingerprint] = identity
-	return nil
-}
-
-func (r *concurrentRaceRepo) CreateUserWithSSHIdentity(_ context.Context, user User, sshIdentity SSHIdentity) (User, SSHIdentity, error) {
-	r.mu.Lock()
-	if !r.createInProgress {
-		r.createInProgress = true
-		r.mu.Unlock()
-		<-r.createWait
-
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		r.nextUserID++
-		r.nextIdentityID++
-		user.ID = "u-concurrent"
-		user.CreatedAt = time.Now().UTC()
-		sshIdentity.ID = "i-concurrent"
-		sshIdentity.UserID = user.ID
-		sshIdentity.FirstSeenAt = time.Now().UTC()
-		r.userByID[user.ID] = user
-		r.identityByFP[sshIdentity.PublicKeyFingerprint] = sshIdentity
-		close(r.createDone)
-		return user, sshIdentity, nil
-	}
-	r.mu.Unlock()
-	<-r.createDone
-
-	return User{}, SSHIdentity{}, ErrSSHIdentityAlreadyExists
-}
-
-func TestResolveSSHIdentityConcurrentUnknownKeyRaceResolvesSameIdentity(t *testing.T) {
-	repo := newConcurrentRaceRepo()
-	useCase := NewResolveSSHIdentityUseCase(repo)
-	key := newSSHPublicKey(t)
-
-	type result struct {
-		identity SessionIdentity
-		err      error
-	}
-
-	results := make(chan result, 2)
-	go func() {
-		identity, err := useCase.Execute(context.Background(), ResolveSSHIdentityInput{Client: "ssh", Key: key})
-		results <- result{identity: identity, err: err}
-	}()
-	go func() {
-		identity, err := useCase.Execute(context.Background(), ResolveSSHIdentityInput{Client: "ssh", Key: key})
-		results <- result{identity: identity, err: err}
-	}()
-
-	close(repo.createWait)
-
-	first := <-results
-	second := <-results
-
-	if first.err != nil {
-		t.Fatalf("first resolve failed: %v", first.err)
-	}
-	if second.err != nil {
-		t.Fatalf("second resolve failed: %v", second.err)
-	}
-
-	if first.identity.User.ID != second.identity.User.ID {
-		t.Fatalf("expected same user, got %s and %s", first.identity.User.ID, second.identity.User.ID)
-	}
-	if first.identity.SSHIdentity.ID != second.identity.SSHIdentity.ID {
-		t.Fatalf("expected same ssh identity, got %s and %s", first.identity.SSHIdentity.ID, second.identity.SSHIdentity.ID)
 	}
 }

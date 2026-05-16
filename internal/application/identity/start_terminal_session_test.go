@@ -63,3 +63,29 @@ func TestStartTerminalSessionLinksResolvedIdentity(t *testing.T) {
 		t.Fatalf("unexpected current screen: %s", repo.created.CurrentScreen)
 	}
 }
+
+func TestStartTerminalSessionAllowsGuestIdentity(t *testing.T) {
+	repo := &testSessionRepo{}
+	useCase := NewStartTerminalSessionUseCase(repo)
+	selectedAddressID := SelectedAddressIDUnsetPlaceholder
+
+	_, err := useCase.Execute(context.Background(), StartTerminalSessionInput{
+		Client:            ClientProtocolSSH,
+		ClientSessionID:   "conn-guest",
+		CurrentScreen:     ScreenSSHSessionPlaceholder,
+		SelectedAddressID: &selectedAddressID,
+	})
+	if err != nil {
+		t.Fatalf("start guest session: %v", err)
+	}
+
+	if repo.created.UserID != nil {
+		t.Fatalf("guest session must not have user_id: %v", *repo.created.UserID)
+	}
+	if repo.created.SSHIdentityID != nil {
+		t.Fatalf("guest session must not have ssh_identity_id: %v", *repo.created.SSHIdentityID)
+	}
+	if repo.created.SSHFingerprint != nil {
+		t.Fatalf("no-key guest session must not have ssh fingerprint: %v", *repo.created.SSHFingerprint)
+	}
+}
