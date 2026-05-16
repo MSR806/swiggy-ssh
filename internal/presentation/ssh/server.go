@@ -97,11 +97,7 @@ func (s *SSHServer) Start(ctx context.Context) error {
 		return fmt.Errorf("load or create host key: %w", err)
 	}
 
-	serverConfig := &ssh.ServerConfig{
-		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			return publicKeyPermissions(key), nil
-		},
-	}
+	serverConfig := newServerConfig()
 	serverConfig.AddHostKey(hostSigner)
 
 	listener, err := net.Listen("tcp", s.addr)
@@ -150,6 +146,19 @@ func (s *SSHServer) Start(ctx context.Context) error {
 	}
 }
 
+func newServerConfig() *ssh.ServerConfig {
+	return &ssh.ServerConfig{
+		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			return publicKeyPermissions(key), nil
+		},
+		// Accept keyboard-interactive without prompts for clients that have no SSH key.
+		// Public-key clients still use PublicKeyCallback, preserving fingerprint metadata.
+		KeyboardInteractiveCallback: func(conn ssh.ConnMetadata, client ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+			return nil, nil
+		},
+	}
+}
+
 func publicKeyPermissions(key ssh.PublicKey) *ssh.Permissions {
 	return &ssh.Permissions{
 		Extensions: map[string]string{
@@ -192,7 +201,12 @@ func (s *SSHServer) handleConn(ctx context.Context, netConn net.Conn, serverConf
 				Client: identity.ClientProtocolSSH,
 				Key:    publicKey,
 			})
-			if resolveErr != nil {
+			if errors.Is(resolveErr, identity.ErrNotFound) {
+				s.logger.InfoContext(ctx, "ssh identity unknown; starting guest session",
+					"remote_addr", sshConn.RemoteAddr().String(),
+					"pubkey_fingerprint", fingerprint,
+				)
+			} else if resolveErr != nil {
 				s.logger.WarnContext(ctx, "ssh identity resolution failed",
 					"remote_addr", sshConn.RemoteAddr().String(),
 					"pubkey_fingerprint", fingerprint,
@@ -207,10 +221,14 @@ func (s *SSHServer) handleConn(ctx context.Context, netConn net.Conn, serverConf
 	var terminalSessionID string
 	if s.startSession != nil {
 		selectedAddressID := identity.SelectedAddressIDUnsetPlaceholder
+		var sshFingerprint *string
+		if fingerprint != "" {
+			sshFingerprint = &fingerprint
+		}
 		trackedSession, trackErr := s.startSession.Execute(ctx, identity.StartTerminalSessionInput{
 			Client:            identity.ClientProtocolSSH,
 			ClientSessionID:   fmt.Sprintf("%x", sshConn.SessionID()),
-			SSHFingerprint:    &fingerprint,
+			SSHFingerprint:    sshFingerprint,
 			CurrentScreen:     identity.ScreenSSHSessionPlaceholder,
 			SelectedAddressID: &selectedAddressID,
 			ResolvedIdentity:  resolvedIdentity,
@@ -435,7 +453,12 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 	}
 
 	// Login confirmed — check/establish account.
-	if s.authUseCase == nil || resolvedUserID == "" {
+	if resolvedUserID == "" {
+		render(ctx, tui.LoginSuccessView{DisplayName: "Guest session"})
+		render(ctx, tui.InstamartPlaceholderView{In: ch})
+		return
+	}
+	if s.authUseCase == nil {
 		render(ctx, tui.LoginSuccessView{})
 		return
 	}

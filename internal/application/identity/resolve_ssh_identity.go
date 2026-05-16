@@ -38,7 +38,7 @@ func NewResolveSSHIdentityUseCase(repo Repository) *ResolveSSHIdentityUseCase {
 	}
 }
 
-// Execute resolves or creates an identity from an SSH public key.
+// Execute resolves an identity from an SSH public key.
 func (r *ResolveSSHIdentityUseCase) Execute(ctx context.Context, input ResolveSSHIdentityInput) (SessionIdentity, error) {
 	if input.Key == nil {
 		return SessionIdentity{}, ErrMissingSSHPublicKey
@@ -51,33 +51,10 @@ func (r *ResolveSSHIdentityUseCase) Execute(ctx context.Context, input ResolveSS
 	if err == nil {
 		return r.resolveExistingSSHIdentity(ctx, input.Client, fingerprint, sshIdentity, resolvedAt)
 	}
-	if !errors.Is(err, ErrNotFound) {
-		return SessionIdentity{}, err
+	if errors.Is(err, ErrNotFound) {
+		return SessionIdentity{}, ErrNotFound
 	}
-
-	user, sshIdentity, err := r.repo.CreateUserWithSSHIdentity(
-		ctx,
-		User{DisplayName: "ssh-user", LastSeenAt: &resolvedAt},
-		SSHIdentity{
-			PublicKeyFingerprint: fingerprint,
-			PublicKey:            string(ssh.MarshalAuthorizedKey(input.Key)),
-			LastSeenAt:           &resolvedAt,
-		},
-	)
-	if err != nil {
-		if errors.Is(err, ErrSSHIdentityAlreadyExists) {
-			existingIdentity, findErr := r.repo.FindSSHIdentityByFingerprint(ctx, fingerprint)
-			if findErr != nil {
-				return SessionIdentity{}, findErr
-			}
-
-			return r.resolveExistingSSHIdentity(ctx, input.Client, fingerprint, existingIdentity, resolvedAt)
-		}
-
-		return SessionIdentity{}, err
-	}
-
-	return SessionIdentity{Client: input.Client, User: user, SSHIdentity: sshIdentity}, nil
+	return SessionIdentity{}, err
 }
 
 func (r *ResolveSSHIdentityUseCase) resolveExistingSSHIdentity(ctx context.Context, client, fingerprint string, sshIdentity SSHIdentity, resolvedAt time.Time) (SessionIdentity, error) {

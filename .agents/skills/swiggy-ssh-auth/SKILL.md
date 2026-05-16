@@ -46,15 +46,19 @@ They share one thing: a **login code** stored in Redis. That code is the bridge 
 
 ## Concept 2: User Identity — SSH Public Key + Fingerprint
 
-**What it is:** Each user has their own SSH key pair generated on their own machine. The public key (padlock) is sent to the server during connection. The private key never leaves the user's machine.
+**What it is:** A returning user's SSH key can identify their durable account. Clients may also connect without a key, or with an unknown key, and receive a guest session.
 
 **How it works:**
-- The server accepts **any** public key without pre-registration (`server.go:98-100` — `PublicKeyCallback` always returns success)
+- The server allows SSH connections with no client key through a guest keyboard-interactive auth path
+- When a public key is provided, the server accepts it for transport and preserves metadata in `ssh.Permissions`
 - The server computes a short unique fingerprint from the public key: `ssh.FingerprintSHA256(key)`
-- That fingerprint is stored in `ssh_identities.public_key_fingerprint` in Postgres
-- On reconnect, `ResolveSSHIdentityUseCase.Execute(ctx, input)` looks up the fingerprint → finds the linked user
+- Known fingerprints are stored in `ssh_identities.public_key_fingerprint` in Postgres
+- On reconnect with a known, non-revoked key, `ResolveSSHIdentityUseCase.Execute(ctx, input)` looks up the fingerprint → finds the linked user
+- Unknown fingerprints return `ErrNotFound`; they do **not** auto-create `users` or `ssh_identities`
+- Revoked known keys return `ErrSSHIdentityRevoked` and are not treated as durable identities
+- No-key and unknown-key SSH connections start guest terminal sessions with no `user_id` or `ssh_identity_id`; unknown-key sessions keep the fingerprint on the terminal session for observability
 
-**Why accept any key?** Because user registration happens via Swiggy browser login, not via pre-uploaded keys. The SSH key is used only to identify the session, not to gate access.
+**Why accept any key?** The SSH key is not an access gate. It is only a durable-account lookup hint. Unknown keys are deliberately guest-only so random SSH keys do not create persistent users or key bindings.
 
 **Fingerprint vs public key:**
 - Public key: long raw string (`ssh-ed25519 AAAA...`)
@@ -83,7 +87,7 @@ CANCELLED → expired or user cancelled
 5. Server starts polling every 2 seconds
 6. User opens browser, visits `/login`, enters the code
 7. HTTP server marks the code as `COMPLETED` in Redis
-8. Poll loop detects `COMPLETED` → session proceeds
+8. Poll loop detects `COMPLETED` → session proceeds. For guest sessions this unlocks Instamart only for the current SSH session; it is repeated on every reconnect.
 
 **Key files:** `internal/presentation/ssh/server.go`, `internal/application/auth/ensure_valid_account.go`, `internal/presentation/http/handlers.go`
 
@@ -211,9 +215,10 @@ terminal_sessions          (one user → many sessions)
    - Client verifies server host key fingerprint (TOFU)
    - Encrypted tunnel established
         ↓
-3. Server accepts any SSH public key
-   - Computes fingerprint from user's public key
-   - Looks up fingerprint in DB → resolves user identity (or unknown)
+3. Server accepts SSH with or without a client public key
+   - If a key is provided, computes its fingerprint
+   - Looks up fingerprint in DB → known key resolves durable user identity
+   - Unknown key or no key → guest session, no user/key rows created
         ↓
 4. User chooses Instamart from the terminal home screen
         ↓
@@ -226,9 +231,8 @@ terminal_sessions          (one user → many sessions)
    - Code marked COMPLETED in Redis
         ↓
 7. Poll loop detects COMPLETED
-   - `EnsureValidAccountUseCase.Execute` called:
-     - First time → creates mock OAuth account for the resolved user
-     - Returning  → checks token validity, re-auths if expired
+   - Known durable user: `EnsureValidAccountUseCase.Execute` checks/creates the stored OAuth account, and re-auths if expired
+   - Guest: no OAuth account is written to Postgres; login completion applies only to this terminal session
         ↓
 8. Terminal proceeds to the current Instamart placeholder
 ```
@@ -272,3 +276,5 @@ terminal_sessions          (one user → many sessions)
 | Login code accepted without Swiggy login | Swiggy OAuth is not yet integrated — `/login` currently accepts any code submission |
 | User sees "fingerprint changed" warning | Old host key on disk differs from new one — delete `.local/ssh_host_ed25519_key` or restore the correct key |
 | Token expired but re-auth not triggered | Check `ValidateTokenForUse` — token status must be `expired` or `reconnect_required` to trigger re-auth |
+| Unknown SSH key creates a persistent user | This is no longer allowed — `ResolveSSHIdentityUseCase` must return `ErrNotFound`, and SSH presentation starts a guest session |
+| Guest auth persists across reconnects | Guest login is session-only by design; users must reconnect with a known key for durable OAuth fast-path behavior |
