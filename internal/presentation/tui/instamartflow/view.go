@@ -1,11 +1,18 @@
 package instamartflow
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
 
+const bodyRows = 12
+
 func (m instamartModel) View() string {
+	if m.viewport.Width > 0 && (m.viewport.Width < 80 || m.viewport.Height < 24) {
+		return "Instamart needs an 80x24 terminal. Resize and try again.\r\n"
+	}
+
 	var sb strings.Builder
 	sb.WriteString(top())
 	sb.WriteString(headerLine(" "+brandStyle.Render("swiggy.ssh")+creamStyle.Render(" > Instamart"), m.headerRight()))
@@ -14,54 +21,89 @@ func (m instamartModel) View() string {
 	sb.WriteString(line(" " + brandStyle.Render("Instamart") + creamStyle.Render(" — groceries and daily essentials in minutes.")))
 	if m.status != "" {
 		sb.WriteString(line(" " + successStyle.Render("✓ "+m.status)))
+	} else {
+		sb.WriteString(line(""))
 	}
 	if m.err != "" {
 		sb.WriteString(line(" " + errorStyle.Render(m.err)))
+	} else {
+		sb.WriteString(line(""))
 	}
 	sb.WriteString(line(""))
 
+	var body strings.Builder
 	switch m.screen {
 	case instamartScreenStatic:
-		m.renderStatic(&sb)
+		m.renderStatic(&body)
 	case instamartScreenLoadingAddresses:
-		sb.WriteString(line(" Loading saved deployment addresses..."))
+		body.WriteString(line(" Loading saved deployment addresses..."))
 	case instamartScreenAddressSelect:
-		m.renderAddresses(&sb)
+		m.renderAddresses(&body)
 	case instamartScreenHome:
-		m.renderHome(&sb)
+		m.renderHome(&body)
 	case instamartScreenSearchInput:
-		m.renderSearch(&sb)
+		m.renderSearch(&body)
 	case instamartScreenProductList:
-		m.renderProducts(&sb)
+		m.renderProducts(&body)
 	case instamartScreenQuantity:
-		m.renderQuantity(&sb)
+		m.renderQuantity(&body)
 	case instamartScreenLoading:
-		sb.WriteString(line(" " + m.loading))
+		body.WriteString(line(" " + m.loading))
 	case instamartScreenCartReview:
-		m.renderCartReview(&sb)
+		m.renderCartReview(&body)
 	case instamartScreenCheckoutConfirm:
-		m.renderCheckoutConfirm(&sb)
+		m.renderCheckoutConfirm(&body)
 	case instamartScreenOrderResult:
-		m.renderOrderResult(&sb)
+		m.renderOrderResult(&body)
 	case instamartScreenOrders:
-		m.renderOrders(&sb)
+		m.renderOrders(&body)
 	case instamartScreenTracking:
-		m.renderTracking(&sb)
+		m.renderTracking(&body)
 	case instamartScreenMessage:
 		message := m.message
 		if message == "" {
 			message = m.status
 		}
-		sb.WriteString(line(" " + message))
+		body.WriteString(line(" " + message))
 	case instamartScreenHelp:
-		m.renderHelp(&sb)
+		m.renderHelp(&body)
 	}
 
+	sb.WriteString(fixedBody(body.String(), bodyRows))
 	sb.WriteString(line(""))
 	sb.WriteString(divider())
 	sb.WriteString(m.footer())
 	sb.WriteString(bottom())
 	return centerInViewport(sb.String(), m.viewport)
+}
+
+func fixedBody(content string, rows int) string {
+	if rows <= 0 {
+		return ""
+	}
+	trimmed := strings.TrimSuffix(content, "\r\n")
+	if trimmed == "" {
+		trimmed = ""
+	}
+	lines := []string{}
+	if trimmed != "" {
+		lines = strings.Split(trimmed, "\r\n")
+	}
+	overflow := len(lines) > rows
+	if overflow {
+		total := len(lines)
+		lines = append([]string(nil), lines[:rows-1]...)
+		lines = append(lines, strings.TrimSuffix(line(mutedStyle.Render(fmt.Sprintf("... %d more lines", total-rows+1))), "\r\n"))
+	}
+	var sb strings.Builder
+	for _, rendered := range lines {
+		sb.WriteString(rendered)
+		sb.WriteString("\r\n")
+	}
+	for i := len(lines); i < rows; i++ {
+		sb.WriteString(line(""))
+	}
+	return sb.String()
 }
 
 func (m instamartModel) headerRight() string {
@@ -151,9 +193,13 @@ func (m instamartModel) footer() string {
 	case instamartScreenQuantity:
 		return footerLine(KeyHint{Key: "+/-", Label: "quantity"}, KeyHint{Key: "enter", Label: "stage"}, KeyHint{Key: "?", Label: "help"}, KeyHint{Key: "esc", Label: "home"})
 	case instamartScreenCartReview:
-		return footerLine(KeyHint{Key: "p/enter", Label: "ship"}, KeyHint{Key: "/", Label: "grep"}, KeyHint{Key: "?", Label: "help"}, KeyHint{Key: "b", Label: "home"})
+		hints := []KeyHint{{Key: "p/enter", Label: "deploy"}, {Key: "/", Label: "grep"}, {Key: "b", Label: "home"}}
+		if m.cartReviewOverflows() {
+			hints = append([]KeyHint{{Key: "j/k", Label: "scroll"}}, hints...)
+		}
+		return footerLine(hints...)
 	case instamartScreenCheckoutConfirm:
-		return footerLine(KeyHint{Key: "y", Label: "confirm order"}, KeyHint{Key: "?", Label: "help"}, KeyHint{Key: "n", Label: "cancel"})
+		return footerLine(KeyHint{Key: "y", Label: "deploy"}, KeyHint{Key: "n", Label: "cancel"})
 	case instamartScreenOrders:
 		return footerLine(KeyHint{Key: "j/k", Label: "move"}, KeyHint{Key: "enter", Label: "tail"}, KeyHint{Key: "?", Label: "help"}, KeyHint{Key: "b", Label: "home"})
 	case instamartScreenHelp:

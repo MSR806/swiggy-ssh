@@ -6,13 +6,15 @@ import (
 	"strings"
 )
 
+const productListRows = 9
+
 func (m instamartModel) renderSearch(sb *strings.Builder) {
 	title := "grep products"
 	if strings.TrimSpace(m.searchQuery) != "" {
 		title += ": " + m.searchQuery
 	}
 	sb.WriteString(line(brandStyle.Render(" " + title)))
-	sb.WriteString(line(" Type query, press enter to open results."))
+	sb.WriteString(line(mutedStyle.Render(" preview · enter opens results")))
 	sb.WriteString(line(""))
 	sb.WriteString(line(" query: " + boldStyle.Render(m.searchQuery) + cursorStyle.Render("_")))
 
@@ -32,15 +34,42 @@ func (m instamartModel) renderSearch(sb *strings.Builder) {
 	}
 
 	sb.WriteString(line(""))
-	sb.WriteString(line(fmt.Sprintf(" preview · matched %d products in %s", len(m.searchPreviewRows), formatElapsed(m.searchPreviewElapsed))))
+	sb.WriteString(line(mutedStyle.Render(fmt.Sprintf(" preview · enter opens results · %d matches in %s", len(m.searchPreviewRows), formatElapsed(m.searchPreviewElapsed)))))
 	if len(m.searchPreviewRows) == 0 {
 		sb.WriteString(line(" No matching products found yet."))
 		return
 	}
-	renderProductTable(sb, m.searchPreviewRows, 0, 5)
+	renderPreviewProductTable(sb, m.searchPreviewRows, 5)
 	if len(m.searchPreviewRows) > 5 {
-		sb.WriteString(line(fmt.Sprintf(" ...and %d more", len(m.searchPreviewRows)-5)))
+		sb.WriteString(line(mutedStyle.Render(fmt.Sprintf(" ...and %d more", len(m.searchPreviewRows)-5))))
 	}
+}
+
+func renderPreviewProductTable(sb *strings.Builder, rows []productVariationRow, limit int) {
+	sb.WriteString(line("   item                         pack      price"))
+	for i, row := range rows {
+		if limit > 0 && i >= limit {
+			break
+		}
+		label := productPreviewRow(row)
+		if !productRowAvailable(row) {
+			label = mutedStyle.Render(label)
+		}
+		sb.WriteString(line("   " + label))
+	}
+}
+
+func productPreviewRow(row productVariationRow) string {
+	name := defaultString(row.Variation.DisplayName, row.Product.DisplayName)
+	if row.Product.Promoted {
+		name = "[ad] " + name
+	}
+	pack := defaultString(row.Variation.QuantityDescription, "-")
+	price := fmt.Sprintf("Rs %d", row.Variation.Price.OfferPrice)
+	if !productRowAvailable(row) {
+		price = "[x] unavailable"
+	}
+	return fmt.Sprintf("%-28s %-9s %s", truncateTerminal(name, 28), truncateTerminal(pack, 9), price)
 }
 
 func (m instamartModel) renderProducts(sb *strings.Builder) {
@@ -51,18 +80,32 @@ func (m instamartModel) renderProducts(sb *strings.Builder) {
 		title = "recent cache"
 	}
 	sb.WriteString(line(brandStyle.Render(" " + title)))
-	sb.WriteString(line(" Choose exact pack. Cart changes after quantity confirmation."))
-	sb.WriteString(line(""))
-	renderProductTable(sb, m.rows, m.cursor, 0)
+	if len(m.rows) > productListRows {
+		start := productWindowStart(m.cursor, len(m.rows), productListRows)
+		end := start + productListRows
+		if end > len(m.rows) {
+			end = len(m.rows)
+		}
+		sb.WriteString(line(mutedStyle.Render(fmt.Sprintf(" choose exact pack · showing %d-%d of %d", start+1, end, len(m.rows)))))
+	} else {
+		sb.WriteString(line(mutedStyle.Render(" choose exact pack")))
+	}
+	renderProductTable(sb, m.rows, m.cursor, productListRows)
 }
 
 func renderProductTable(sb *strings.Builder, rows []productVariationRow, cursor, limit int) {
-	sb.WriteString(line("   #   code  item                         pack      price"))
-	for i, row := range rows {
-		if limit > 0 && i >= limit {
-			break
+	sb.WriteString(line("   #   item                         pack      price"))
+	start := productWindowStart(cursor, len(rows), limit)
+	end := len(rows)
+	if limit > 0 && start+limit < end {
+		end = start + limit
+	}
+	for i := start; i < end; i++ {
+		row := rows[i]
+		label := productTableRow(i-start, row)
+		if !productRowAvailable(row) {
+			label = mutedStyle.Render(label)
 		}
-		label := productTableRow(i, row)
 		if i == cursor {
 			sb.WriteString(line(cursorStyle.Render("> ") + boldStyle.Render(label)))
 		} else {
@@ -74,16 +117,30 @@ func renderProductTable(sb *strings.Builder, rows []productVariationRow, cursor,
 func productTableRow(index int, row productVariationRow) string {
 	name := defaultString(row.Variation.DisplayName, row.Product.DisplayName)
 	if row.Product.Promoted {
-		name = "Sponsored " + name
+		name = "[ad] " + name
 	}
 	pack := defaultString(row.Variation.QuantityDescription, "-")
-	status := "200"
 	price := fmt.Sprintf("Rs %d", row.Variation.Price.OfferPrice)
 	if !productRowAvailable(row) {
-		status = "409"
-		price = "out of stock"
+		price = "[x] unavailable"
 	}
-	return fmt.Sprintf("%-3d %-5s %-28s %-9s %s", index+1, status, truncateTerminal(name, 28), truncateTerminal(pack, 9), price)
+	return fmt.Sprintf("%-3d %-28s %-9s %s", index+1, truncateTerminal(name, 28), truncateTerminal(pack, 9), price)
+}
+
+func productWindowStart(cursor, total, limit int) int {
+	if limit <= 0 || total <= limit {
+		return 0
+	}
+	if cursor < 0 {
+		return 0
+	}
+	if cursor >= total {
+		cursor = total - 1
+	}
+	if cursor >= limit {
+		return cursor - limit + 1
+	}
+	return 0
 }
 
 func (m instamartModel) renderQuantity(sb *strings.Builder) {
@@ -92,9 +149,9 @@ func (m instamartModel) renderQuantity(sb *strings.Builder) {
 		return
 	}
 	sb.WriteString(line(brandStyle.Render(" stage item")))
-	status := "200 available"
+	status := "available"
 	if !productRowAvailable(*m.selectedRow) {
-		status = "409 unavailable"
+		status = "unavailable"
 	}
 	sb.WriteString(line(fmt.Sprintf(" item: %s", defaultString(m.selectedRow.Variation.DisplayName, m.selectedRow.Product.DisplayName))))
 	sb.WriteString(line(fmt.Sprintf(" pack: %s", defaultString(m.selectedRow.Variation.QuantityDescription, "-"))))

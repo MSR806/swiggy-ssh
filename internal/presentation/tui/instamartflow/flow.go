@@ -157,6 +157,7 @@ type instamartModel struct {
 	intendedItems []domaininstamart.CartUpdateItem
 	paymentMethod string
 	reviewedCart  *domaininstamart.CartReviewSnapshot
+	cartScroll    int
 
 	checkoutResult  domaininstamart.CheckoutResult
 	checkoutElapsed time.Duration
@@ -189,10 +190,11 @@ type instamartSearchSpinnerMsg struct {
 }
 
 type instamartCartMsg struct {
-	cart    domaininstamart.Cart
-	err     error
-	action  string
-	elapsed time.Duration
+	cart       domaininstamart.Cart
+	err        error
+	refreshErr error
+	action     string
+	elapsed    time.Duration
 }
 
 type instamartCheckoutMsg struct {
@@ -225,6 +227,9 @@ func (m instamartModel) Init() tea.Cmd {
 func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	previousScreen := m.screen
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.viewport = Viewport{Width: msg.Width, Height: msg.Height}
+		return m, nil
 	case tea.KeyMsg:
 		updated, cmd := m.handleKey(msg)
 		return clearOnScreenChange(previousScreen, updated, cmd)
@@ -306,7 +311,13 @@ func (m instamartModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyCart(msg.cart)
 		m.screen = instamartScreenCartReview
 		m.cursor = 0
+		m.cartScroll = 0
 		m.status = msg.action + " in " + formatElapsed(msg.elapsed)
+		if msg.refreshErr != nil {
+			m.err = displayErr("Cart staged, but payment refresh failed", msg.refreshErr)
+		} else {
+			m.err = ""
+		}
 		return clearOnScreenChange(previousScreen, m, nil)
 	case instamartCheckoutMsg:
 		if msg.err != nil {
@@ -653,7 +664,7 @@ func (m instamartModel) handleProductKey(key string) (tea.Model, tea.Cmd) {
 		return m.selectProductRow(m.cursor)
 	default:
 		if idx, ok := numberKeyIndex(key); ok {
-			return m.selectProductRow(idx)
+			return m.selectProductRow(productWindowStart(m.cursor, len(m.rows), productListRows) + idx)
 		}
 	}
 	return m, nil
@@ -719,11 +730,12 @@ func (m instamartModel) handleCartReviewKey(key string) (tea.Model, tea.Cmd) {
 			m.err = "Cart address no longer matches the selected address. Switch target address or update the cart again."
 			return m, nil
 		}
-		if len(m.currentCart.AvailablePaymentMethods) == 0 {
+		paymentMethod := preferredPaymentMethod(m.currentCart.AvailablePaymentMethods)
+		if paymentMethod == "" {
 			m.err = "No terminal payment method is available for this cart."
 			return m, nil
 		}
-		m.paymentMethod = strings.TrimSpace(m.currentCart.AvailablePaymentMethods[0])
+		m.paymentMethod = paymentMethod
 		m.reviewedCart = &domaininstamart.CartReviewSnapshot{
 			AddressID:     m.selectedAddressID(),
 			Items:         append([]domaininstamart.CartUpdateItem(nil), m.intendedItems...),
@@ -733,6 +745,15 @@ func (m instamartModel) handleCartReviewKey(key string) (tea.Model, tea.Cmd) {
 		m.screen = instamartScreenCheckoutConfirm
 		m.err = ""
 		return m, nil
+	case "up", "k":
+		if m.cartScroll > 0 {
+			m.cartScroll--
+		}
+	case "down", "j":
+		maxScroll := len(m.cartReviewLines()) - (bodyRows - 1)
+		if maxScroll > 0 && m.cartScroll < maxScroll {
+			m.cartScroll++
+		}
 	case "s", "/":
 		return m.startSearch(), nil
 	case "h", "b":
@@ -866,8 +887,15 @@ func (m instamartModel) loadCartCmd() tea.Cmd {
 func (m instamartModel) updateCartCmd(items []domaininstamart.CartUpdateItem) tea.Cmd {
 	return func() tea.Msg {
 		started := time.Now()
-		cart, err := m.service.UpdateCart(m.ctx, appinstamart.UpdateCartInput{SelectedAddressID: m.selectedAddressID(), Items: items})
-		return instamartCartMsg{cart: cart, err: err, action: "staged", elapsed: time.Since(started)}
+		updatedCart, err := m.service.UpdateCart(m.ctx, appinstamart.UpdateCartInput{SelectedAddressID: m.selectedAddressID(), Items: items})
+		if err != nil {
+			return instamartCartMsg{err: err, action: "staged", elapsed: time.Since(started)}
+		}
+		cart, err := m.service.GetCart(m.ctx)
+		if err != nil {
+			return instamartCartMsg{cart: updatedCart, refreshErr: err, action: "staged", elapsed: time.Since(started)}
+		}
+		return instamartCartMsg{cart: cart, action: "staged", elapsed: time.Since(started)}
 	}
 }
 
@@ -1023,6 +1051,23 @@ func numberKeyIndex(key string) (int, bool) {
 		return 0, false
 	}
 	return n - 1, true
+}
+
+func preferredPaymentMethod(methods []string) string {
+	fallback := ""
+	for _, method := range methods {
+		method = strings.TrimSpace(method)
+		if method == "" {
+			continue
+		}
+		if strings.EqualFold(method, "Cash") {
+			return method
+		}
+		if fallback == "" {
+			fallback = method
+		}
+	}
+	return fallback
 }
 
 func addressLabel(address domaininstamart.Address) string {
