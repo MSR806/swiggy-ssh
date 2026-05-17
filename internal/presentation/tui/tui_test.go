@@ -33,8 +33,8 @@ func TestHomeViewRendersSplash(t *testing.T) {
 
 	for _, want := range []string{
 		"swiggy.dev",
-		"press enter to continue",
 		"enter continue",
+		"▸",
 		"● Connected SSH",
 		"⣿⣿⣿", // braille logo
 	} {
@@ -44,6 +44,9 @@ func TestHomeViewRendersSplash(t *testing.T) {
 	}
 	if got := strings.Count(out, "\r\n"); got != 24 {
 		t.Fatalf("expected home view to use fixed 80x24 frame, got %d rows", got)
+	}
+	if strings.Contains(out, "press enter to continue") {
+		t.Fatal("did not expect duplicate body continue prompt on splash")
 	}
 	for _, removed := range []string{"Instamart", "Food", "Reorder usuals", "Account"} {
 		if strings.Contains(out, removed) {

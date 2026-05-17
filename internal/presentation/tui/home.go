@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -37,22 +38,43 @@ var homeItems = []homeItem{
 
 var homeLogoGradient = []string{"#E97112", "#FC8019", "#FF8B2E", "#FF9843"}
 
+type homeSplashTickMsg struct{}
+
+const homeSplashTickInterval = 500 * time.Millisecond
+
 type homeModel struct {
-	ctx      context.Context
-	viewport Viewport
-	cursor   int
-	items    []homeItem
-	action   HomeAction
-	notice   string // transient "coming soon" message
-	menu     bool
+	ctx       context.Context
+	viewport  Viewport
+	cursor    int
+	items     []homeItem
+	action    HomeAction
+	notice    string // transient "coming soon" message
+	menu      bool
+	animate   bool
+	shineStep int
 }
 
 func (m homeModel) Init() tea.Cmd {
+	if m.animate && !m.menu {
+		return tea.Batch(ctxQuitCmd(m.ctx), homeSplashTickCmd())
+	}
 	return ctxQuitCmd(m.ctx)
+}
+
+func homeSplashTickCmd() tea.Cmd {
+	return tea.Tick(homeSplashTickInterval, func(time.Time) tea.Msg {
+		return homeSplashTickMsg{}
+	})
 }
 
 func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case homeSplashTickMsg:
+		if !m.menu && m.animate {
+			m.shineStep = (m.shineStep + 1) % homeSplashShineFrames
+			return m, homeSplashTickCmd()
+		}
+		return m, nil
 	case tea.KeyMsg:
 		if !m.menu {
 			switch msg.String() {
@@ -91,6 +113,29 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+const homeSplashShineFrames = 11
+
+func homeSplashRenderLine(content string, row, total, shineStep int) string {
+	if row == (shineStep+2)%homeSplashShineFrames {
+		return shineStyle.Render(content)
+	}
+	return gradientRender(content, homeLogoGradient, row, total)
+}
+
+func homeSplashContinueHint(shineStep int) KeyHint {
+	markers := []struct {
+		left  string
+		right string
+	}{
+		{"▸", "◂"},
+		{"›", "‹"},
+		{"»", "«"},
+		{"›", "‹"},
+	}
+	marker := markers[shineStep%len(markers)]
+	return KeyHint{Key: marker.left + " enter", Label: "continue " + marker.right, Highlight: true}
+}
+
 func (m homeModel) View() string {
 	logo := []string{
 		"    ⢀⣠⣴⣶⣶⣶⣶⣦⣄⡀    ",
@@ -119,6 +164,7 @@ func (m homeModel) View() string {
 	const wordmarkLines = 6
 	const wordmarkWidth = 48
 	const topPad = (logoLines - wordmarkLines) / 2
+	const splashTopPad = (fixedFrameBodyRows - logoLines + 1) / 2
 
 	var sb strings.Builder
 	sb.WriteString(top())
@@ -127,22 +173,21 @@ func (m homeModel) View() string {
 
 	var body strings.Builder
 	if !m.menu {
-		body.WriteString(line(""))
+		for range splashTopPad {
+			body.WriteString(line(""))
+		}
 		for i, logoLine := range logo {
 			wmIdx := i - topPad
 			right := strings.Repeat(" ", wordmarkWidth)
 			if wmIdx >= 0 && wmIdx < wordmarkLines {
 				right = gradientRender(wordmark[wmIdx], homeLogoGradient, wmIdx, wordmarkLines)
 			}
-			body.WriteString(centeredLine(gradientRender(logoLine, homeLogoGradient, i, logoLines) + "  " + right))
+			body.WriteString(centeredLine(homeSplashRenderLine(logoLine, i, logoLines, m.shineStep) + "  " + right))
 		}
-		body.WriteString(line(""))
-		body.WriteString(line(""))
-		body.WriteString(centeredLine(mutedStyle.Render("press enter to continue")))
 		sb.WriteString(fixedBody(body.String(), fixedFrameBodyRows))
 		sb.WriteString(divider())
 		sb.WriteString(footerLine(
-			KeyHint{Key: "enter", Label: "continue"},
+			homeSplashContinueHint(m.shineStep),
 			KeyHint{Key: "q", Label: "quit"},
 		))
 		sb.WriteString(bottom())
@@ -185,14 +230,14 @@ func (m homeModel) View() string {
 }
 
 func (v HomeView) Render(ctx context.Context, w io.Writer) error {
-	m := homeModel{ctx: ctx, viewport: viewportFromContext(ctx), cursor: 0, items: homeItems}
+	m := homeModel{ctx: ctx, viewport: viewportFromContext(ctx), cursor: 0, items: homeItems, animate: v.In != nil}
 	_, err := runInteractive(m, w, v.In)
 	return err
 }
 
 // RenderWithAction runs HomeView and returns what the user selected.
 func (v HomeView) RenderWithAction(ctx context.Context, w io.Writer) (HomeAction, error) {
-	m := homeModel{ctx: ctx, viewport: viewportFromContext(ctx), cursor: 0, items: homeItems}
+	m := homeModel{ctx: ctx, viewport: viewportFromContext(ctx), cursor: 0, items: homeItems, animate: v.In != nil}
 	finalModel, err := runInteractive(m, w, v.In)
 	if err != nil {
 		return HomeActionNone, err
