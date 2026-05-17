@@ -18,6 +18,7 @@ const (
 	HomeActionInstamart                         // user selected Instamart
 	HomeActionAddressSelected                   // user selected a session address
 	HomeActionTrackOrders                       // user selected active order tracking
+	HomeActionFood                              // user selected Food
 )
 
 // HomeAddressStatus is the root readiness state for delivery targets.
@@ -204,6 +205,9 @@ func (m homeModel) activateMenuItem(idx int) (tea.Model, tea.Cmd) {
 	switch item.action {
 	case homeItemInstamart:
 		m.result.Action = HomeActionInstamart
+		return m, tea.Quit
+	case homeItemFood:
+		m.result.Action = HomeActionFood
 		return m, tea.Quit
 	case homeItemTrack:
 		m.result.Action = HomeActionTrackOrders
@@ -436,7 +440,7 @@ func homeItemsForSession(state HomeSessionState) []homeItem {
 	addressAvailable := state.Authenticated && len(state.Addresses) > 0
 	return []homeItem{
 		{icon: "▦", label: "Instamart", action: homeItemInstamart, available: true},
-		{icon: "◖", label: "Food", action: homeItemFood, available: false},
+		{icon: "◖", label: "Food", action: homeItemFood, available: true},
 		{icon: "⌂", label: "Addresses", action: homeItemAddresses, available: addressAvailable},
 		{icon: "◷", label: "Tail active order", action: homeItemTrack, available: true},
 		{icon: "✦", label: "swiggy.ai", action: homeItemAI, available: false},

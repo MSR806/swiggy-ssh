@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"swiggy-ssh/internal/application/auth"
+	appfood "swiggy-ssh/internal/application/food"
 	"swiggy-ssh/internal/application/identity"
 	appinstamart "swiggy-ssh/internal/application/instamart"
 	domainauth "swiggy-ssh/internal/domain/auth"
+	domainfood "swiggy-ssh/internal/domain/food"
 	domaininstamart "swiggy-ssh/internal/domain/instamart"
 	"swiggy-ssh/internal/presentation/tui"
 
@@ -40,6 +42,7 @@ type SSHServer struct {
 	publicBaseURL  string
 	authUseCase    *auth.EnsureValidAccountUseCase
 	instamartSvc   *appinstamart.Service
+	foodSvc        *appfood.Service
 }
 
 type activeConnTracker struct {
@@ -90,7 +93,7 @@ func (t *activeConnTracker) closeAll() {
 	}
 }
 
-func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.ResolveSSHIdentityUseCase, registrar *identity.RegisterSSHIdentityUseCase, startSession *identity.StartTerminalSessionUseCase, endSession *identity.EndTerminalSessionUseCase, authAttemptSvc auth.BrowserAuthAttemptService, publicBaseURL string, authUseCase *auth.EnsureValidAccountUseCase, instamartSvc *appinstamart.Service) *SSHServer {
+func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.ResolveSSHIdentityUseCase, registrar *identity.RegisterSSHIdentityUseCase, startSession *identity.StartTerminalSessionUseCase, endSession *identity.EndTerminalSessionUseCase, authAttemptSvc auth.BrowserAuthAttemptService, publicBaseURL string, authUseCase *auth.EnsureValidAccountUseCase, instamartSvc *appinstamart.Service, foodSvc *appfood.Service) *SSHServer {
 	return &SSHServer{
 		addr:           addr,
 		hostKeyPath:    hostKeyPath,
@@ -103,6 +106,7 @@ func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.Resol
 		publicBaseURL:  publicBaseURL,
 		authUseCase:    authUseCase,
 		instamartSvc:   instamartSvc,
+		foodSvc:        foodSvc,
 	}
 }
 
@@ -497,6 +501,50 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 				continue
 			}
 			return
+		case tui.HomeActionFood:
+			if !state.authenticated {
+				var ok bool
+				ok, resolvedUserID = s.authenticateSessionForApp(ctx, ch, render, terminalSessionID, fingerprint, publicKeyAuthorized, resolvedUserID)
+				if !ok {
+					return
+				}
+				state.authenticated = true
+				s.loadSessionAddresses(ctx, resolvedUserID, &state)
+			}
+			selectedAddress, ok := state.selectedAddress()
+			if !ok {
+				continue
+			}
+			foodAddress := selectedAddressToFoodAddress(selectedAddress)
+			if s.foodSvc != nil {
+				foodAddresses, err := s.foodSvc.GetAddresses(domainauth.ContextWithUserID(ctx, resolvedUserID))
+				if err != nil {
+					s.logger.WarnContext(ctx, "food address load failed", "error", err)
+					render(ctx, tui.ErrorView{Message: "Food address lookup failed. Please reconnect and try again."})
+					return
+				}
+				var foodAddressOK bool
+				foodAddress, foodAddressOK = foodAddressForSelected(foodAddresses, selectedAddress)
+				if !foodAddressOK {
+					render(ctx, tui.ErrorView{Message: "Food could not match the selected delivery address. Switch addresses in Home or reconnect and try again."})
+					return
+				}
+			}
+			_ = tui.ClearScreen(ch)
+			foodResult, renderErr := (tui.FoodAppView{
+				Service:         s.foodSvc,
+				UserID:          resolvedUserID,
+				SelectedAddress: foodAddress,
+				In:              ch,
+			}).RenderWithResult(ctx, ch)
+			if renderErr != nil {
+				return
+			}
+			if foodResult.Action == tui.FoodActionBackToHome {
+				showMenu = true
+				continue
+			}
+			return
 		default:
 			return
 		}
@@ -648,6 +696,52 @@ func (s sessionAddressState) selectedAddress() (domaininstamart.Address, bool) {
 		return domaininstamart.Address{}, false
 	}
 	return s.addresses[s.selectedIndex], true
+}
+
+func selectedAddressToFoodAddress(addr domaininstamart.Address) domainfood.Address {
+	return domainfood.Address{
+		ID:          addr.ID,
+		Label:       addr.Label,
+		DisplayLine: addr.DisplayLine,
+		PhoneMasked: addr.PhoneMasked,
+		Category:    addr.Category,
+	}
+}
+
+func foodAddressForSelected(addresses []domainfood.Address, selected domaininstamart.Address) (domainfood.Address, bool) {
+	if len(addresses) == 0 {
+		return domainfood.Address{}, false
+	}
+	selectedID := strings.TrimSpace(selected.ID)
+	if selectedID != "" {
+		for _, address := range addresses {
+			if strings.TrimSpace(address.ID) == selectedID {
+				return address, true
+			}
+		}
+	}
+
+	selectedKey := comparableAddressKey(selected.Label, selected.DisplayLine, selected.Category, selected.PhoneMasked)
+	if selectedKey != "" {
+		for _, address := range addresses {
+			if comparableAddressKey(address.Label, address.DisplayLine, address.Category, address.PhoneMasked) == selectedKey {
+				return address, true
+			}
+		}
+	}
+
+	return domainfood.Address{}, false
+}
+
+func comparableAddressKey(parts ...string) string {
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.ToLower(strings.TrimSpace(part))
+		if part != "" {
+			normalized = append(normalized, part)
+		}
+	}
+	return strings.Join(normalized, "|")
 }
 
 func (s *sessionAddressState) selectAddressByID(addressID string) {
