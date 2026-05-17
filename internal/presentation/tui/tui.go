@@ -114,6 +114,7 @@ func init() {
 //	└ + 78×─ + ┘
 
 const innerWidth = 78
+const fixedFrameBodyRows = 18
 
 func top() string {
 	return "┌" + strings.Repeat("─", innerWidth) + "┐\r\n"
@@ -155,6 +156,29 @@ func centeredLine(content string) string {
 	leftPad := (innerWidth - w) / 2
 	rightPad := innerWidth - w - leftPad
 	return "│" + strings.Repeat(" ", leftPad) + content + strings.Repeat(" ", rightPad) + "│\r\n"
+}
+
+func fixedBody(content string, rows int) string {
+	if rows <= 0 {
+		return ""
+	}
+	trimmed := strings.TrimSuffix(content, "\r\n")
+	lines := []string{}
+	if trimmed != "" {
+		lines = strings.Split(trimmed, "\r\n")
+	}
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
+	var sb strings.Builder
+	for _, rendered := range lines {
+		sb.WriteString(rendered)
+		sb.WriteString("\r\n")
+	}
+	for i := len(lines); i < rows; i++ {
+		sb.WriteString(line(""))
+	}
+	return sb.String()
 }
 
 type KeyHint struct {

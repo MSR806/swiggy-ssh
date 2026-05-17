@@ -30,10 +30,9 @@ type homeItem struct {
 var homeItems = []homeItem{
 	{"Instamart", true},
 	{"Food", false},
-	{"Reorder usuals", false},
+	{"swiggy.ai", false},
 	{"Track orders", false},
 	{"Addresses", false},
-	{"Account", false},
 }
 
 var homeLogoGradient = []string{"#E97112", "#FC8019", "#FF8B2E", "#FF9843"}
@@ -45,6 +44,7 @@ type homeModel struct {
 	items    []homeItem
 	action   HomeAction
 	notice   string // transient "coming soon" message
+	menu     bool
 }
 
 func (m homeModel) Init() tea.Cmd {
@@ -54,6 +54,17 @@ func (m homeModel) Init() tea.Cmd {
 func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if !m.menu {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				m.action = HomeActionNone
+				return m, tea.Quit
+			case "enter", " ":
+				m.menu = true
+				return m, nil
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			m.action = HomeActionNone
@@ -103,54 +114,66 @@ func (m homeModel) View() string {
 		"╚══════╝ ╚══╝╚══╝ ╚═╝ ╚═════╝  ╚═════╝    ╚═╝   ",
 	}
 
-	// Render logo and wordmark side-by-side.
-	// Logo: 11 lines tall. Wordmark: 6 lines tall.
-	// Vertically center wordmark: 2 blank lines top + 6 wordmark + 3 blank = 11 rows.
+	// Keep the root menu inside the same 80x24 frame as Instamart.
 	const logoLines = 11
 	const wordmarkLines = 6
 	const wordmarkWidth = 48
-	const topPad = (logoLines - wordmarkLines) / 2 // = 2
+	const topPad = (logoLines - wordmarkLines) / 2
 
 	var sb strings.Builder
 	sb.WriteString(top())
-	sb.WriteString(headerLine(" swiggy.ssh", connStyle.Render("● Connected SSH ")))
+	sb.WriteString(headerLine(" swiggy.dev", connStyle.Render("● Connected SSH ")))
 	sb.WriteString(divider())
-	for i, logoLine := range logo {
-		wmIdx := i - topPad
-		right := strings.Repeat(" ", wordmarkWidth)
-		if wmIdx >= 0 && wmIdx < wordmarkLines {
-			right = gradientRender(wordmark[wmIdx], homeLogoGradient, wmIdx, wordmarkLines)
+
+	var body strings.Builder
+	if !m.menu {
+		body.WriteString(line(""))
+		for i, logoLine := range logo {
+			wmIdx := i - topPad
+			right := strings.Repeat(" ", wordmarkWidth)
+			if wmIdx >= 0 && wmIdx < wordmarkLines {
+				right = gradientRender(wordmark[wmIdx], homeLogoGradient, wmIdx, wordmarkLines)
+			}
+			body.WriteString(centeredLine(gradientRender(logoLine, homeLogoGradient, i, logoLines) + "  " + right))
 		}
-		sb.WriteString(centeredLine(gradientRender(logoLine, homeLogoGradient, i, logoLines) + "  " + right))
+		body.WriteString(line(""))
+		body.WriteString(line(""))
+		body.WriteString(centeredLine(mutedStyle.Render("press enter to continue")))
+		sb.WriteString(fixedBody(body.String(), fixedFrameBodyRows))
+		sb.WriteString(divider())
+		sb.WriteString(footerLine(
+			KeyHint{Key: "enter", Label: "continue"},
+			KeyHint{Key: "q", Label: "quit"},
+		))
+		sb.WriteString(bottom())
+		return centerInViewport(sb.String(), m.viewport)
 	}
-	sb.WriteString(line(""))
-	sb.WriteString(centeredLine(creamStyle.Render("Order groceries from your terminal")))
-	sb.WriteString(centeredLine(mutedStyle.Render("Instamart · straight from SSH")))
-	sb.WriteString(line(""))
-	sb.WriteString(divider())
-	sb.WriteString(line(brandStyle.Render(" What would you like to do?")))
-	sb.WriteString(line(""))
+
+	body.WriteString(line(""))
+	body.WriteString(line(""))
+	body.WriteString(line(""))
+	body.WriteString(line(brandStyle.Render(" What would you like to do?")))
 	for i, item := range m.items {
 		label := fmt.Sprintf("%d. %s", i+1, item.label)
 		if !item.available {
 			label += "  " + mutedStyle.Render("(coming soon)")
 		}
 		if m.cursor == i {
-			sb.WriteString(line(cursorStyle.Render("> ") + boldStyle.Render(label)))
+			body.WriteString(line(cursorStyle.Render("> ") + boldStyle.Render(label)))
 		} else {
 			if item.available {
-				sb.WriteString(line("   " + label))
+				body.WriteString(line("   " + label))
 			} else {
-				sb.WriteString(line(mutedStyle.Render("   " + label)))
+				body.WriteString(line(mutedStyle.Render("   " + label)))
 			}
 		}
 	}
-	sb.WriteString(line(""))
 	if m.notice != "" {
-		sb.WriteString(line(" " + accentStyle.Render("⚡ "+m.notice)))
+		body.WriteString(line(" " + accentStyle.Render("⚡ "+m.notice)))
 	} else {
-		sb.WriteString(line(""))
+		body.WriteString(line(""))
 	}
+	sb.WriteString(fixedBody(body.String(), fixedFrameBodyRows))
 	sb.WriteString(divider())
 	sb.WriteString(footerLine(
 		KeyHint{Key: "j/k", Label: "move"},

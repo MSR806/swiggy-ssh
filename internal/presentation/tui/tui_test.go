@@ -21,7 +21,7 @@ func renderCtx() (context.Context, context.CancelFunc) {
 
 // --- HomeView ---
 
-func TestHomeViewRendersMenuItems(t *testing.T) {
+func TestHomeViewRendersSplash(t *testing.T) {
 	ctx, cancel := renderCtx()
 	defer cancel()
 	v := tui.HomeView{}
@@ -32,18 +32,48 @@ func TestHomeViewRendersMenuItems(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		"swiggy.ssh",
-		"Instamart",
-		"Food",
-		"Reorder usuals",
-		"coming soon",
-		"j/k move",
+		"swiggy.dev",
+		"press enter to continue",
+		"enter continue",
 		"● Connected SSH",
 		"⣿⣿⣿", // braille logo
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in HomeView output", want)
 		}
+	}
+	if got := strings.Count(out, "\r\n"); got != 24 {
+		t.Fatalf("expected home view to use fixed 80x24 frame, got %d rows", got)
+	}
+	for _, removed := range []string{"Instamart", "Food", "Reorder usuals", "Account"} {
+		if strings.Contains(out, removed) {
+			t.Fatalf("did not expect menu item %q on splash", removed)
+		}
+	}
+}
+
+func TestHomeViewRendersMenuItemsAfterContinue(t *testing.T) {
+	ctx, cancel := renderCtx()
+	defer cancel()
+	v := tui.HomeView{In: strings.NewReader("\r")}
+	var buf bytes.Buffer
+	if err := v.Render(ctx, &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := buf.String()
+
+	for _, want := range []string{"Instamart", "Food", "swiggy.ai", "coming soon", "j/k move"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in HomeView menu output", want)
+		}
+	}
+	for _, removed := range []string{"Reorder usuals", "Account", "press enter to continue"} {
+		if strings.Contains(out, removed) {
+			t.Fatalf("did not expect %q in menu output", removed)
+		}
+	}
+	if got := strings.Count(out, "\r\n"); got != 24 {
+		t.Fatalf("expected menu to use fixed 80x24 frame, got %d rows", got)
 	}
 }
 
