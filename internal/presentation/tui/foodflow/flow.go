@@ -1360,6 +1360,7 @@ func upsertFoodCartItem(items []domainfood.FoodCartUpdateItem, newItem domainfoo
 	for _, item := range items {
 		if item.MenuItemID == newItem.MenuItemID {
 			if newItem.Quantity > 0 {
+				newItem.Quantity += item.Quantity
 				updated = append(updated, newItem)
 			}
 			found = true
