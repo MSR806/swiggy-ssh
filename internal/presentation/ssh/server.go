@@ -14,6 +14,7 @@ import (
 
 	"swiggy-ssh/internal/application/auth"
 	"swiggy-ssh/internal/application/identity"
+	appinstamart "swiggy-ssh/internal/application/instamart"
 	"swiggy-ssh/internal/presentation/tui"
 
 	"golang.org/x/crypto/ssh"
@@ -36,6 +37,7 @@ type SSHServer struct {
 	authAttemptSvc auth.BrowserAuthAttemptService
 	publicBaseURL  string
 	authUseCase    *auth.EnsureValidAccountUseCase
+	instamartSvc   *appinstamart.Service
 }
 
 type activeConnTracker struct {
@@ -79,7 +81,7 @@ func (t *activeConnTracker) closeAll() {
 	}
 }
 
-func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.ResolveSSHIdentityUseCase, registrar *identity.RegisterSSHIdentityUseCase, startSession *identity.StartTerminalSessionUseCase, endSession *identity.EndTerminalSessionUseCase, authAttemptSvc auth.BrowserAuthAttemptService, publicBaseURL string, authUseCase *auth.EnsureValidAccountUseCase) *SSHServer {
+func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.ResolveSSHIdentityUseCase, registrar *identity.RegisterSSHIdentityUseCase, startSession *identity.StartTerminalSessionUseCase, endSession *identity.EndTerminalSessionUseCase, authAttemptSvc auth.BrowserAuthAttemptService, publicBaseURL string, authUseCase *auth.EnsureValidAccountUseCase, instamartSvc *appinstamart.Service) *SSHServer {
 	return &SSHServer{
 		addr:           addr,
 		hostKeyPath:    hostKeyPath,
@@ -91,6 +93,7 @@ func New(addr, hostKeyPath string, logger *slog.Logger, resolver *identity.Resol
 		authAttemptSvc: authAttemptSvc,
 		publicBaseURL:  publicBaseURL,
 		authUseCase:    authUseCase,
+		instamartSvc:   instamartSvc,
 	}
 }
 
@@ -228,18 +231,16 @@ func (s *SSHServer) handleConn(ctx context.Context, netConn net.Conn, serverConf
 
 	var terminalSessionID string
 	if s.startSession != nil {
-		selectedAddressID := identity.SelectedAddressIDUnsetPlaceholder
 		var sshFingerprint *string
 		if fingerprint != "" {
 			sshFingerprint = &fingerprint
 		}
 		trackedSession, trackErr := s.startSession.Execute(ctx, identity.StartTerminalSessionInput{
-			Client:            identity.ClientProtocolSSH,
-			ClientSessionID:   fmt.Sprintf("%x", sshConn.SessionID()),
-			SSHFingerprint:    sshFingerprint,
-			CurrentScreen:     identity.ScreenSSHSessionPlaceholder,
-			SelectedAddressID: &selectedAddressID,
-			ResolvedIdentity:  resolvedIdentity,
+			Client:           identity.ClientProtocolSSH,
+			ClientSessionID:  fmt.Sprintf("%x", sshConn.SessionID()),
+			SSHFingerprint:   sshFingerprint,
+			CurrentScreen:    identity.ScreenSSHSessionPlaceholder,
+			ResolvedIdentity: resolvedIdentity,
 		})
 		if trackErr != nil {
 			s.logger.WarnContext(ctx, "terminal session track start failed",
@@ -401,12 +402,6 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 		_, _ = io.WriteString(ch, "Session handler placeholder complete. Goodbye.\n")
 		return
 	}
-	if err := tui.EnterFullscreen(ch); err != nil {
-		s.logger.WarnContext(ctx, "failed to enter fullscreen tui", "error", err)
-		return
-	}
-	defer func() { _ = tui.ExitFullscreen(ch) }()
-
 	render := func(renderCtx context.Context, view tui.View) {
 		_ = tui.ClearScreen(ch)
 		_ = view.Render(renderCtx, ch)
@@ -429,7 +424,7 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 			AllowFirstAuth: false,
 		})
 		if fastErr == nil {
-			render(ctx, tui.InstamartPlaceholderView{UserID: resolvedUserID, In: ch})
+			render(ctx, tui.InstamartAppView{Service: s.instamartSvc, UserID: resolvedUserID, In: ch})
 			return
 		}
 		if errors.Is(fastErr, auth.ErrAccountRevoked) {
@@ -482,7 +477,7 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 		return
 	}
 	if s.authUseCase == nil {
-		render(ctx, tui.LoginSuccessView{})
+		render(ctx, tui.LoginSuccessView{In: ch})
 		return
 	}
 
@@ -518,8 +513,9 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 			IsFirstAuth: result.IsFirstAuth,
 			WasReauth:   result.WasReauth,
 			Account:     result.Account,
+			In:          ch,
 		})
-		render(ctx, tui.InstamartPlaceholderView{UserID: resolvedUserID, In: ch})
+		render(ctx, tui.InstamartAppView{Service: s.instamartSvc, UserID: resolvedUserID, In: ch})
 	}
 }
 
@@ -533,15 +529,8 @@ func (s *SSHServer) renderLoginWaitingAndPoll(ctx context.Context, ch ssh.Channe
 
 	completed, pollErr := pollAuthAttempt(ctx, s.authAttemptSvc, rawAttempt, s.logger)
 	cancelRender()
-
-	select {
-	case renderErr := <-renderDone:
-		if renderErr != nil {
-			s.logger.WarnContext(ctx, "login waiting render failed", "error", renderErr)
-		}
-	case <-time.After(200 * time.Millisecond):
-		// Do not hold auth completion on terminal input cleanup; the SSH channel
-		// will be closed when the session ends if the renderer is still unwinding.
+	if renderErr := <-renderDone; renderErr != nil {
+		s.logger.WarnContext(ctx, "login waiting render failed", "error", renderErr)
 	}
 
 	return completed, pollErr

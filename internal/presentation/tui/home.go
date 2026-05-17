@@ -36,7 +36,7 @@ var homeItems = []homeItem{
 	{"Account", false},
 }
 
-var homeLogoGradient = []string{"#FC8019", "#FF8F1F", "#FFA12B", "#FFB347"}
+var homeLogoGradient = []string{"#E97112", "#FC8019", "#FF8B2E", "#FF9843"}
 
 type homeModel struct {
 	ctx      context.Context
@@ -162,33 +162,15 @@ func (m homeModel) View() string {
 }
 
 func (v HomeView) Render(ctx context.Context, w io.Writer) error {
-	in := v.In
-	if in == nil {
-		in = strings.NewReader("")
-	}
 	m := homeModel{ctx: ctx, viewport: viewportFromContext(ctx), cursor: 0, items: homeItems}
-	p := tea.NewProgram(m,
-		tea.WithOutput(w),
-		tea.WithInput(in),
-		tea.WithoutSignals(),
-	)
-	_, err := p.Run()
+	_, err := runInteractive(m, w, v.In)
 	return err
 }
 
 // RenderWithAction runs HomeView and returns what the user selected.
 func (v HomeView) RenderWithAction(ctx context.Context, w io.Writer) (HomeAction, error) {
-	in := v.In
-	if in == nil {
-		in = strings.NewReader("")
-	}
 	m := homeModel{ctx: ctx, viewport: viewportFromContext(ctx), cursor: 0, items: homeItems}
-	p := tea.NewProgram(m,
-		tea.WithOutput(w),
-		tea.WithInput(in),
-		tea.WithoutSignals(),
-	)
-	finalModel, err := p.Run()
+	finalModel, err := runInteractive(m, w, v.In)
 	if err != nil {
 		return HomeActionNone, err
 	}

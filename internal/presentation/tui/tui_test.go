@@ -47,7 +47,7 @@ func TestHomeViewRendersMenuItems(t *testing.T) {
 	}
 }
 
-func TestHomeViewUsesSwiggyOrange(t *testing.T) {
+func TestHomeViewUsesLogoGradient(t *testing.T) {
 	ctx, cancel := renderCtx()
 	defer cancel()
 	var buf bytes.Buffer
@@ -55,8 +55,8 @@ func TestHomeViewUsesSwiggyOrange(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 
-	if !strings.Contains(buf.String(), "\x1b[38;2;252;128;25m") {
-		t.Fatal("expected home view to render Swiggy orange ANSI color")
+	if !strings.Contains(buf.String(), "\x1b[38;2;233;113;18m") {
+		t.Fatal("expected home logo gradient to render #E97112")
 	}
 }
 
@@ -86,8 +86,8 @@ func TestInstamartPlaceholderViewUsesInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if !strings.Contains(buf.String(), "Instamart") {
-		t.Fatal("expected Instamart screen output")
+	if !strings.Contains(buf.String(), "env=instamart") {
+		t.Fatal("expected Instamart flow output")
 	}
 }
 
@@ -198,7 +198,7 @@ func TestLoginSuccessViewShowsSignedInAs(t *testing.T) {
 		"Alice",
 		"alice@example.com",
 		"Instamart",
-		"j/k move",
+		"enter continue",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in LoginSuccessView output", want)
@@ -277,10 +277,9 @@ func TestInstamartViewRendersAddress(t *testing.T) {
 
 	for _, want := range []string{
 		"Work",
-		"Koramangala",
-		"3 items",
-		"Search products",
-		"/ search",
+		"cart=3",
+		"grep products",
+		"/ grep",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in InstamartView output", want)
@@ -299,8 +298,8 @@ func TestInstamartPlaceholderViewDelegates(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		"Instamart",
-		"Search products",
+		"env=instamart",
+		"grep products",
 		"Home", // default address label
 		"Guest session connected",
 	} {

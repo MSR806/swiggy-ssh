@@ -12,6 +12,7 @@ import (
 const (
 	defaultAppEnv                 = "local"
 	defaultSwiggyProvider         = "mock"
+	defaultSwiggyMCPIMEndpoint    = "https://mcp.swiggy.com/im"
 	defaultSwiggyAuthAuthorizeURL = "https://mcp.swiggy.com/auth/authorize"
 	defaultSwiggyAuthTokenURL     = "https://mcp.swiggy.com/auth/token"
 	defaultSwiggyClientID         = "swiggy-mcp"
@@ -33,6 +34,7 @@ const (
 type Config struct {
 	AppEnv                 string
 	SwiggyProvider         string
+	SwiggyMCPIMEndpoint    string
 	SwiggyLoginStartURL    string
 	SwiggyAuthAuthorizeURL string
 	SwiggyAuthTokenURL     string
@@ -53,6 +55,7 @@ func Load() Config {
 	return Config{
 		AppEnv:                 envOrDefault("APP_ENV", defaultAppEnv),
 		SwiggyProvider:         envOrDefault("SWIGGY_PROVIDER", defaultSwiggyProvider),
+		SwiggyMCPIMEndpoint:    envOrDefault("SWIGGY_MCP_IM_ENDPOINT", defaultSwiggyMCPIMEndpoint),
 		SwiggyLoginStartURL:    envOrDefault("SWIGGY_LOGIN_START_URL", ""),
 		SwiggyAuthAuthorizeURL: envOrDefault("SWIGGY_AUTH_AUTHORIZE_URL", defaultSwiggyAuthAuthorizeURL),
 		SwiggyAuthTokenURL:     envOrDefault("SWIGGY_AUTH_TOKEN_URL", defaultSwiggyAuthTokenURL),
@@ -72,6 +75,16 @@ func Load() Config {
 func (c Config) Validate() error {
 	if c.SwiggyProvider == "mock" {
 		return nil
+	}
+	if c.SwiggyProvider != "mcp" && c.SwiggyProvider != "swiggy" {
+		return fmt.Errorf("SWIGGY_PROVIDER must be mock, mcp, or swiggy, got %q", c.SwiggyProvider)
+	}
+	mcpEndpoint := strings.TrimSpace(c.SwiggyMCPIMEndpoint)
+	if mcpEndpoint == "" {
+		mcpEndpoint = defaultSwiggyMCPIMEndpoint
+	}
+	if err := validateHTTPURL("SWIGGY_MCP_IM_ENDPOINT", mcpEndpoint); err != nil {
+		return err
 	}
 	if strings.TrimSpace(c.SwiggyClientID) == "" {
 		return errors.New("SWIGGY_CLIENT_ID is required when SWIGGY_PROVIDER is not mock")
