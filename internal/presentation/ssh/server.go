@@ -15,6 +15,8 @@ import (
 	"swiggy-ssh/internal/application/auth"
 	"swiggy-ssh/internal/application/identity"
 	appinstamart "swiggy-ssh/internal/application/instamart"
+	domainauth "swiggy-ssh/internal/domain/auth"
+	domaininstamart "swiggy-ssh/internal/domain/instamart"
 	"swiggy-ssh/internal/presentation/tui"
 
 	"golang.org/x/crypto/ssh"
@@ -44,6 +46,13 @@ type activeConnTracker struct {
 	mu           sync.Mutex
 	conns        map[net.Conn]struct{}
 	shuttingDown bool
+}
+
+type sessionAddressState struct {
+	authenticated bool
+	addresses     []domaininstamart.Address
+	selectedIndex int
+	addressStatus tui.HomeAddressStatus
 }
 
 func newActiveConnTracker() *activeConnTracker {
@@ -407,43 +416,105 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 		_ = view.Render(renderCtx, ch)
 	}
 
-	// === HOME SCREEN — always shown first ===
-	_ = tui.ClearScreen(ch)
-	action, err := tui.HomeView{In: ch}.RenderWithAction(ctx, ch)
-	if err != nil || action != tui.HomeActionInstamart {
-		// User quit or selected a coming-soon item — end session.
-		return
-	}
-
-	// === User selected Instamart — check/establish auth ===
-
-	// RETURNING USER FAST-PATH: valid account already exists → go straight to Instamart.
+	state := sessionAddressState{selectedIndex: -1, addressStatus: tui.HomeAddressRequired}
 	if s.authUseCase != nil && resolvedUserID != "" {
 		_, fastErr := s.authUseCase.Execute(ctx, auth.EnsureValidAccountInput{
 			UserID:         resolvedUserID,
 			AllowFirstAuth: false,
 		})
 		if fastErr == nil {
-			render(ctx, tui.InstamartAppView{Service: s.instamartSvc, UserID: resolvedUserID, In: ch})
-			return
+			state.authenticated = true
+			s.loadSessionAddresses(ctx, resolvedUserID, &state)
 		}
 		if errors.Is(fastErr, auth.ErrAccountRevoked) {
 			render(ctx, tui.RevokedView{})
 			return
 		}
-		// expired/reconnect_required/not-found — fall through to login flow.
 	}
 
+	showAddressPicker := false
+	showMenu := false
+	for {
+		_ = tui.ClearScreen(ch)
+		result, err := tui.HomeView{Session: state.homeSessionState(), StartAddressPicker: showAddressPicker, StartMenu: showMenu, In: ch}.RenderWithResult(ctx, ch)
+		showAddressPicker = false
+		showMenu = false
+		if err != nil {
+			return
+		}
+		switch result.Action {
+		case tui.HomeActionAddressSelected:
+			if result.AddressIndex >= 0 && result.AddressIndex < len(state.addresses) {
+				state.selectedIndex = result.AddressIndex
+				state.addressStatus = tui.HomeAddressSelected
+			}
+			showMenu = true
+			continue
+		case tui.HomeActionInstamart:
+			if !state.authenticated {
+				var ok bool
+				ok, resolvedUserID = s.authenticateSessionForApp(ctx, ch, render, terminalSessionID, fingerprint, publicKeyAuthorized, resolvedUserID)
+				if !ok {
+					return
+				}
+				state.authenticated = true
+				s.loadSessionAddresses(ctx, resolvedUserID, &state)
+			}
+			selectedAddress, ok := state.selectedAddress()
+			if !ok {
+				continue
+			}
+			_ = tui.ClearScreen(ch)
+			instamartResult, renderErr := (tui.InstamartAppView{Service: s.instamartSvc, UserID: resolvedUserID, Addresses: state.addresses, SelectedAddress: selectedAddress, In: ch}).RenderWithResult(ctx, ch)
+			if renderErr != nil {
+				return
+			}
+			if instamartResult.Action == tui.InstamartActionBackToHome {
+				state.selectAddressByID(instamartResult.SelectedAddress.ID)
+				showMenu = true
+				continue
+			}
+			return
+		case tui.HomeActionTrackOrders:
+			if !state.authenticated {
+				var ok bool
+				ok, resolvedUserID = s.authenticateSessionForApp(ctx, ch, render, terminalSessionID, fingerprint, publicKeyAuthorized, resolvedUserID)
+				if !ok {
+					return
+				}
+				state.authenticated = true
+				s.loadSessionAddresses(ctx, resolvedUserID, &state)
+			}
+			selectedAddress, _ := state.selectedAddress()
+			_ = tui.ClearScreen(ch)
+			instamartResult, renderErr := (tui.InstamartAppView{Service: s.instamartSvc, UserID: resolvedUserID, Addresses: state.addresses, SelectedAddress: selectedAddress, StartTracking: true, In: ch}).RenderWithResult(ctx, ch)
+			if renderErr != nil {
+				return
+			}
+			if instamartResult.Action == tui.InstamartActionBackToHome {
+				state.selectAddressByID(instamartResult.SelectedAddress.ID)
+				showMenu = true
+				continue
+			}
+			return
+		default:
+			return
+		}
+	}
+}
+
+func (s *SSHServer) authenticateSessionForApp(ctx context.Context, ch ssh.Channel, render func(context.Context, tui.View), terminalSessionID, fingerprint, publicKeyAuthorized, resolvedUserID string) (bool, string) {
 	// BROWSER AUTH ATTEMPT FLOW
+
 	durableUserID, identityErr := s.ensureDurableUserForBrowserAuth(ctx, resolvedUserID, publicKeyAuthorized)
 	if identityErr != nil {
 		s.logger.WarnContext(ctx, "failed to establish durable ssh identity", "error", identityErr, "pubkey_fingerprint", fingerprint)
 		if errors.Is(identityErr, auth.ErrOAuthAccountUserRequired) || errors.Is(identityErr, identity.ErrMissingSSHPublicKey) {
 			render(ctx, tui.ErrorView{Message: "Browser login needs an SSH public key. Reconnect with an SSH key and try again."})
-			return
+			return false, resolvedUserID
 		}
 		render(ctx, tui.ErrorView{Message: "Login unavailable. Please try again later."})
-		return
+		return false, resolvedUserID
 	}
 	resolvedUserID = durableUserID
 
@@ -452,33 +523,33 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 		s.logger.WarnContext(ctx, "failed to issue auth attempt", "error", issueErr)
 		if errors.Is(issueErr, auth.ErrOAuthAccountUserRequired) {
 			render(ctx, tui.ErrorView{Message: "Browser login needs an SSH public key. Reconnect with an SSH key and try again."})
-			return
+			return false, resolvedUserID
 		}
 		render(ctx, tui.ErrorView{Message: "Login unavailable. Please try again later."})
-		return
+		return false, resolvedUserID
 	}
 	if !authRequired.AuthRequired {
 		render(ctx, tui.ErrorView{Message: "Login unavailable. Please try again later."})
-		return
+		return false, resolvedUserID
 	}
 	completed, pollErr := s.renderLoginWaitingAndPoll(ctx, ch, authRequired.LoginURL, authRequired.AuthAttemptToken)
 	if pollErr != nil {
 		render(ctx, tui.ErrorView{Message: "Login polling error. Session ending."})
-		return
+		return false, resolvedUserID
 	}
 	if !completed {
 		render(ctx, tui.ErrorView{Message: "Login expired or cancelled. Please reconnect."})
-		return
+		return false, resolvedUserID
 	}
 
 	// Login confirmed — check/establish account.
 	if resolvedUserID == "" {
 		render(ctx, tui.InstamartPlaceholderView{StatusMessage: "Guest session connected for this SSH session.", In: ch})
-		return
+		return false, resolvedUserID
 	}
 	if s.authUseCase == nil {
 		render(ctx, tui.LoginSuccessView{In: ch})
-		return
+		return true, resolvedUserID
 	}
 
 	reauthFn := func(reauthCtx context.Context) error {
@@ -505,9 +576,11 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 	switch {
 	case errors.Is(authErr, auth.ErrAccountRevoked):
 		render(ctx, tui.RevokedView{})
+		return false, resolvedUserID
 	case authErr != nil:
 		s.logger.WarnContext(ctx, "ensure valid account failed", "error", authErr)
 		render(ctx, tui.ErrorView{Message: "Auth check failed. Please reconnect."})
+		return false, resolvedUserID
 	default:
 		render(ctx, tui.LoginSuccessView{
 			IsFirstAuth: result.IsFirstAuth,
@@ -515,7 +588,79 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 			Account:     result.Account,
 			In:          ch,
 		})
-		render(ctx, tui.InstamartAppView{Service: s.instamartSvc, UserID: resolvedUserID, In: ch})
+		return true, resolvedUserID
+	}
+	return false, resolvedUserID
+}
+
+func (s *SSHServer) loadSessionAddresses(ctx context.Context, userID string, state *sessionAddressState) {
+	if state == nil || !state.authenticated {
+		return
+	}
+	if s.instamartSvc == nil || userID == "" {
+		state.addressStatus = tui.HomeAddressUnavailable
+		return
+	}
+	addresses, err := s.instamartSvc.GetAddresses(domainauth.ContextWithUserID(ctx, userID))
+	if err != nil {
+		s.logger.WarnContext(ctx, "session address load failed", "error", err)
+		state.addresses = nil
+		state.selectedIndex = -1
+		state.addressStatus = tui.HomeAddressUnavailable
+		return
+	}
+	state.addresses = addresses
+	if len(addresses) == 0 {
+		state.selectedIndex = -1
+		state.addressStatus = tui.HomeAddressRequired
+		return
+	}
+	if state.selectedIndex < 0 || state.selectedIndex >= len(addresses) {
+		state.selectedIndex = 0
+	}
+	state.addressStatus = tui.HomeAddressSelected
+}
+
+func (s sessionAddressState) homeSessionState() tui.HomeSessionState {
+	addresses := make([]tui.HomeAddressOption, 0, len(s.addresses))
+	for _, address := range s.addresses {
+		addresses = append(addresses, tui.HomeAddressOption{
+			ID:          address.ID,
+			Label:       address.Label,
+			DisplayLine: address.DisplayLine,
+			PhoneMasked: address.PhoneMasked,
+			Category:    address.Category,
+		})
+	}
+	return tui.HomeSessionState{
+		Authenticated:        s.authenticated,
+		AddressStatus:        s.addressStatus,
+		SelectedAddressIndex: s.selectedIndex,
+		Addresses:            addresses,
+	}
+}
+
+func (s sessionAddressState) selectedAddress() (domaininstamart.Address, bool) {
+	if s.addressStatus != tui.HomeAddressSelected || s.selectedIndex < 0 || s.selectedIndex >= len(s.addresses) {
+		return domaininstamart.Address{}, false
+	}
+	if strings.TrimSpace(s.addresses[s.selectedIndex].ID) == "" {
+		return domaininstamart.Address{}, false
+	}
+	return s.addresses[s.selectedIndex], true
+}
+
+func (s *sessionAddressState) selectAddressByID(addressID string) {
+	addressID = strings.TrimSpace(addressID)
+	if addressID == "" {
+		return
+	}
+	for i, address := range s.addresses {
+		if strings.TrimSpace(address.ID) == addressID {
+			s.selectedIndex = i
+			s.addressStatus = tui.HomeAddressSelected
+			return
+		}
 	}
 }
 

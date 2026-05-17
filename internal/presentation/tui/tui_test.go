@@ -35,7 +35,7 @@ func TestHomeViewRendersSplash(t *testing.T) {
 		"swiggy.dev",
 		"enter continue",
 		"▸",
-		"● Connected SSH",
+		"auth required",
 		"⣿⣿⣿", // braille logo
 	} {
 		if !strings.Contains(out, want) {
@@ -52,6 +52,56 @@ func TestHomeViewRendersSplash(t *testing.T) {
 		if strings.Contains(out, removed) {
 			t.Fatalf("did not expect menu item %q on splash", removed)
 		}
+	}
+}
+
+func TestHomeViewRendersSelectedAddressReadiness(t *testing.T) {
+	ctx, cancel := renderCtx()
+	defer cancel()
+	v := tui.HomeView{Session: tui.HomeSessionState{
+		Authenticated:        true,
+		AddressStatus:        tui.HomeAddressSelected,
+		SelectedAddressIndex: 0,
+		Addresses:            []tui.HomeAddressOption{{ID: "addr-1", Label: "Home"}},
+	}}
+	var buf bytes.Buffer
+	if err := v.Render(ctx, &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(buf.String(), "deploying to") || !strings.Contains(buf.String(), "Home") {
+		t.Fatalf("expected selected address readiness, got %q", buf.String())
+	}
+}
+
+func TestHomeAddressPickerDoesNotRenderFullAddress(t *testing.T) {
+	ctx, cancel := renderCtx()
+	defer cancel()
+	v := tui.HomeView{
+		Session: tui.HomeSessionState{
+			Authenticated:        true,
+			AddressStatus:        tui.HomeAddressSelected,
+			SelectedAddressIndex: 0,
+			Addresses: []tui.HomeAddressOption{{
+				ID:          "addr-1",
+				Label:       "Home",
+				DisplayLine: "Flat 42, Secret Street, Bengaluru",
+				PhoneMasked: "****6438",
+			}},
+		},
+		In: strings.NewReader("\r3"),
+	}
+	var buf bytes.Buffer
+	if err := v.Render(ctx, &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"Home", "****6438", "Flat 42"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in address picker output", want)
+		}
+	}
+	if strings.Contains(out, "Secret Street") || strings.Contains(out, "Bengaluru") {
+		t.Fatalf("full address must not render in root address picker: %q", out)
 	}
 }
 
