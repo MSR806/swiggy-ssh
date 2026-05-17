@@ -234,6 +234,39 @@ func TestMCPFoodClientMapsStructuredRestaurantSearchWithArrayCuisines(t *testing
 	}
 }
 
+func TestParseFoodCartTextParsesQuantityMarkers(t *testing.T) {
+	data := parseFoodCartText(`Restaurant: Burger King
+Items (3):
+  - 2x Original Whopper Chicken — ₹418 (ID: item-1)
+  - Crispy Veg Burger x 3 — ₹210 (ID: item-2)
+  - Regular Fries (4 qty) — ₹360 (ID: item-3)
+
+TO PAY: ₹988
+Payment methods: Cash`)
+
+	if len(data.Items) != 3 {
+		t.Fatalf("expected three cart items, got %#v", data.Items)
+	}
+	tests := []struct {
+		idx      int
+		name     string
+		quantity int
+	}{
+		{idx: 0, name: "Original Whopper Chicken", quantity: 2},
+		{idx: 1, name: "Crispy Veg Burger", quantity: 3},
+		{idx: 2, name: "Regular Fries", quantity: 4},
+	}
+	for _, tt := range tests {
+		item := data.Items[tt.idx]
+		if item.Name != tt.name || item.Quantity.Int() != tt.quantity {
+			t.Fatalf("item %d: expected %q x%d, got %#v", tt.idx, tt.name, tt.quantity, item)
+		}
+	}
+	if data.BillBreakdown.ToPay.Value.Int() != 988 || !reflect.DeepEqual(data.AvailablePaymentMethods, []string{"Cash"}) {
+		t.Fatalf("unexpected cart summary: %#v", data)
+	}
+}
+
 func foodCartResponseData() map[string]any {
 	return map[string]any{
 		"restaurantId":            "restaurant-1",

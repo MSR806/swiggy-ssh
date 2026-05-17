@@ -527,7 +527,8 @@ func (s *SSHServer) runSession(ctx context.Context, ch ssh.Channel, fallbackMsg,
 				foodAddress, foodAddressOK = foodAddressForSelected(foodAddresses, selectedAddress)
 				if !foodAddressOK {
 					render(ctx, tui.ErrorView{Message: "Food could not match the selected delivery address. Switch addresses in Home or reconnect and try again."})
-					return
+					showAddressPicker = true
+					continue
 				}
 			}
 			_ = tui.ClearScreen(ch)

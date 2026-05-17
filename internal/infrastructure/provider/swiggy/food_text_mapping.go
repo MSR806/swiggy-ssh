@@ -8,12 +8,14 @@ import (
 )
 
 var (
-	foodRestaurantLinePattern = regexp.MustCompile(`^\s*\d+\.\s+(.+?)\s+—\s+(.+?)\s+\|\s+([^|]+)\|\s+([^|]+)\|\s+(.+?)\s+\(ID:\s*([^\)]+)\)`)
-	foodMenuItemLinePattern   = regexp.MustCompile(`^\s*\d+\.\s+(.+?)\s+—\s+₹\s*([0-9]+(?:\.[0-9]+)?)\s+\|\s*(.*?)\s*\(ID:\s*([^\)]+)\)`)
-	foodAddonLinePattern      = regexp.MustCompile(`^\s*Addons \(([^\)]+)\):\s+\[(.+)\]\s*$`)
-	foodAddonChoicePattern    = regexp.MustCompile(`([^\[,]+?)\s+₹\s*([0-9]+(?:\.[0-9]+)?)\s+\(group:([^,\)]+),\s*choice:([^\)]+)\)`)
-	foodCartItemLinePattern   = regexp.MustCompile(`^\s*-\s+(.+?)\s+—\s+₹\s*([0-9]+(?:\.[0-9]+)?)\s+\(ID:\s*([^\)]+)\)`)
-	foodOrderLinePattern      = regexp.MustCompile(`^\s*\d+\.\s+Order\s+(.+?)\s+—\s+(.+?)\s+\|\s+(.+?)\s+\|\s+₹\s*([0-9]+(?:\.[0-9]+)?)`)
+	foodRestaurantLinePattern     = regexp.MustCompile(`^\s*\d+\.\s+(.+?)\s+—\s+(.+?)\s+\|\s+([^|]+)\|\s+([^|]+)\|\s+(.+?)\s+\(ID:\s*([^\)]+)\)`)
+	foodMenuItemLinePattern       = regexp.MustCompile(`^\s*\d+\.\s+(.+?)\s+—\s+₹\s*([0-9]+(?:\.[0-9]+)?)\s+\|\s*(.*?)\s*\(ID:\s*([^\)]+)\)`)
+	foodAddonLinePattern          = regexp.MustCompile(`^\s*Addons \(([^\)]+)\):\s+\[(.+)\]\s*$`)
+	foodAddonChoicePattern        = regexp.MustCompile(`([^\[,]+?)\s+₹\s*([0-9]+(?:\.[0-9]+)?)\s+\(group:([^,\)]+),\s*choice:([^\)]+)\)`)
+	foodCartItemLinePattern       = regexp.MustCompile(`^\s*-\s+(.+?)\s+—\s+₹\s*([0-9]+(?:\.[0-9]+)?)\s+\(ID:\s*([^\)]+)\)`)
+	foodCartQuantityPrefixPattern = regexp.MustCompile(`(?i)^\s*(?:(\d+)\s*[x×]\s+|x\s*(\d+)\s+)`)
+	foodCartQuantitySuffixPattern = regexp.MustCompile(`(?i)\s+(?:[x×]\s*(\d+)|\((\d+)\s*(?:qty|quantity)\))$`)
+	foodOrderLinePattern          = regexp.MustCompile(`^\s*\d+\.\s+Order\s+(.+?)\s+—\s+(.+?)\s+\|\s+(.+?)\s+\|\s+₹\s*([0-9]+(?:\.[0-9]+)?)`)
 )
 
 func mapFoodTextResponse(toolName, text string, target any) error {
@@ -141,10 +143,11 @@ func parseFoodCartText(text string) mcpFoodCartData {
 		default:
 			matches := foodCartItemLinePattern.FindStringSubmatch(line)
 			if len(matches) == 4 {
+				name, quantity := parseFoodCartItemNameQuantity(matches[1])
 				data.Items = append(data.Items, mcpFoodCartItem{
 					MenuItemID: flexibleString(matches[3]),
-					Name:       strings.TrimSpace(matches[1]),
-					Quantity:   flexibleInt(1),
+					Name:       name,
+					Quantity:   flexibleInt(quantity),
 					Price:      flexibleInt(parseFoodNumber(matches[2])),
 					FinalPrice: flexibleInt(parseFoodNumber(matches[2])),
 				})
@@ -152,6 +155,39 @@ func parseFoodCartText(text string) mcpFoodCartData {
 		}
 	}
 	return data
+}
+
+func parseFoodCartItemNameQuantity(rawName string) (string, int) {
+	name := strings.TrimSpace(rawName)
+	quantity := 1
+
+	if matches := foodCartQuantityPrefixPattern.FindStringSubmatchIndex(name); len(matches) > 0 && matches[0] == 0 {
+		if parsed := parseFirstMatchedInt(name, matches[2:6]); parsed > 0 {
+			quantity = parsed
+			name = strings.TrimSpace(name[matches[1]:])
+		}
+	}
+	if matches := foodCartQuantitySuffixPattern.FindStringSubmatchIndex(name); len(matches) > 0 && matches[1] == len(name) {
+		if parsed := parseFirstMatchedInt(name, matches[2:6]); parsed > 0 {
+			quantity = parsed
+			name = strings.TrimSpace(name[:matches[0]])
+		}
+	}
+	return name, quantity
+}
+
+func parseFirstMatchedInt(value string, indexes []int) int {
+	for i := 0; i+1 < len(indexes); i += 2 {
+		start, end := indexes[i], indexes[i+1]
+		if start < 0 || end < 0 {
+			continue
+		}
+		parsed, err := strconv.Atoi(value[start:end])
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func parseFoodOrdersText(text string) mcpFoodOrdersData {
